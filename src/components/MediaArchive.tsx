@@ -17,7 +17,19 @@ import {
   Sparkles,
   Maximize2,
 } from 'lucide-react';
-import { useAudioReader } from '../context/AudioReaderContext';
+import {
+  useAudioReader,
+  getSharedAudioContext,
+  unlockMobileAudio,
+  activateMobileAudioSession,
+  playSingingBowlSound,
+} from '../context/AudioReaderContext';
+import {
+  playNativeBellAudio,
+  startNativeTanpuraDrone,
+  stopNativeTanpuraDrone,
+  setNativeTanpuraVolume,
+} from '../utils/audioGenerator';
 
 const GUIDED_CONTEMPLATIONS: Record<string, string> = {
   'audio-1':
@@ -46,110 +58,86 @@ export const MediaArchive: React.FC = () => {
   const [audioVolume, setAudioVolume] = useState<number>(0.85);
   const [copiedTranscript, setCopiedTranscript] = useState<boolean>(false);
 
-  // Web Audio Context & Intervals
+  // Web Audio Nodes & Intervals
   const audioIntervalRef = useRef<number | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const droneNodesRef = useRef<{ oscillators: OscillatorNode[]; gain: GainNode } | null>(null);
   const bellIntervalRef = useRef<number | null>(null);
   const htmlAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const { speak, stopSpeech } = useAudioReader();
+  const { speak, stopSpeech, testVoice, isMobile } = useAudioReader();
 
   const videoItems = MEDIA_ARCHIVE.filter((m) => m.type === 'video');
   const audioItems = MEDIA_ARCHIVE.filter((m) => m.type === 'audio');
 
-  const getAudioContext = (): AudioContext => {
-    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      audioCtxRef.current = new AudioCtx();
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume().catch(() => {});
-    }
-    return audioCtxRef.current;
+  const getAudioContext = (): AudioContext | null => {
+    return getSharedAudioContext();
   };
 
   // Tibetan Bell / Sacred Gong Strike
-  const playResonantGong = (freq = 264, volume = audioVolume) => {
-    try {
-      const ctx = getAudioContext();
-      const now = ctx.currentTime;
-      const harmonics = [1, 2.0, 2.76, 4.0, 5.4];
-      const gains = [0.45, 0.22, 0.12, 0.06, 0.02];
-
-      harmonics.forEach((mult, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-
-        osc.type = i % 2 === 0 ? 'sine' : 'triangle';
-        osc.frequency.setValueAtTime(freq * mult, now);
-
-        gain.gain.setValueAtTime(0, now);
-        gain.gain.linearRampToValueAtTime(gains[i] * volume, now + 0.04);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + 4.6);
-
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-
-        osc.start(now);
-        osc.stop(now + 4.7);
-      });
-    } catch (err) {
-      console.warn('Audio gong error:', err);
-    }
+  const playResonantGong = (freq = 264, _volume = audioVolume) => {
+    unlockMobileAudio();
+    activateMobileAudioSession();
+    playSingingBowlSound(freq);
   };
 
-  // Authentic Tanpura Meditation Drone (Sa-Pa chord at 136.1 Hz Om fundamental)
+  // Authentic Tanpura Meditation Drone (Dual pipeline: Native HTML5 Audio + Web Audio)
   const startTanpuraMeditationAudio = () => {
     try {
-      const ctx = getAudioContext();
+      unlockMobileAudio();
+      activateMobileAudioSession();
       stopTanpuraMeditationAudio();
 
-      const masterGain = ctx.createGain();
-      masterGain.gain.setValueAtTime(0.001, ctx.currentTime);
-      masterGain.gain.linearRampToValueAtTime(0.18 * audioVolume, ctx.currentTime + 1.0);
+      // 1. Native HTML5 Audio Tanpura Drone (guaranteed audible on Xiaomi 11T / Android)
+      startNativeTanpuraDrone(0.85 * audioVolume);
 
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(450, ctx.currentTime);
+      // 2. Play starting crystal chime
+      playNativeBellAudio(0.95 * audioVolume);
 
-      const chord = [
-        { freq: 136.1, vol: 0.35 },  // Sa fundamental
-        { freq: 204.15, vol: 0.2 },  // Pa fifth
-        { freq: 272.2, vol: 0.15 },  // Sa octave
-        { freq: 432.0, vol: 0.06 },  // Sacred 432 Hz resonance
-      ];
+      // 3. Layer with Web Audio API for harmonic richness on browsers that support it
+      const ctx = getAudioContext();
+      if (ctx) {
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.001, ctx.currentTime);
+        masterGain.gain.linearRampToValueAtTime(0.28 * audioVolume, ctx.currentTime + 1.0);
 
-      const oscillators: OscillatorNode[] = [];
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(550, ctx.currentTime);
 
-      chord.forEach((note) => {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(note.freq, ctx.currentTime);
-        g.gain.setValueAtTime(note.vol, ctx.currentTime);
+        const chord = [
+          { freq: 216.0, vol: 0.35 },  // Sa fundamental (audible on phones)
+          { freq: 324.0, vol: 0.25 },  // Pa fifth
+          { freq: 432.0, vol: 0.18 },  // Sa octave
+          { freq: 648.0, vol: 0.08 },  // Resonance
+        ];
 
-        osc.connect(g);
-        g.connect(filter);
-        osc.start();
-        oscillators.push(osc);
-      });
+        const oscillators: OscillatorNode[] = [];
 
-      filter.connect(masterGain);
-      masterGain.connect(ctx.destination);
+        chord.forEach((note) => {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(note.freq, ctx.currentTime);
+          g.gain.setValueAtTime(note.vol, ctx.currentTime);
 
-      droneNodesRef.current = { oscillators, gain: masterGain };
+          osc.connect(g);
+          g.connect(filter);
+          osc.start();
+          oscillators.push(osc);
+        });
 
-      // Initial clear, warm Tibetan bell
-      playResonantGong(264, audioVolume);
+        filter.connect(masterGain);
+        masterGain.connect(ctx.destination);
+
+        droneNodesRef.current = { oscillators, gain: masterGain };
+      }
     } catch (err) {
       console.warn('Tanpura audio start error:', err);
     }
   };
 
   const stopTanpuraMeditationAudio = () => {
+    stopNativeTanpuraDrone();
     if (bellIntervalRef.current) {
       clearInterval(bellIntervalRef.current);
       bellIntervalRef.current = null;
@@ -157,7 +145,9 @@ export const MediaArchive: React.FC = () => {
     if (droneNodesRef.current) {
       try {
         const ctx = getAudioContext();
-        droneNodesRef.current.gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+        if (ctx) {
+          droneNodesRef.current.gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+        }
         setTimeout(() => {
           if (droneNodesRef.current) {
             droneNodesRef.current.oscillators.forEach((o) => {
@@ -189,6 +179,9 @@ export const MediaArchive: React.FC = () => {
 
   // Play Guided Meditation Session with spoken Advaita contemplation and gentle Tanpura
   const togglePlayAudio = () => {
+    unlockMobileAudio();
+    activateMobileAudioSession();
+
     if (isPlayingAudio) {
       stopAllAudio();
       return;
@@ -234,13 +227,16 @@ export const MediaArchive: React.FC = () => {
 
   const handleVolumeChange = (vol: number) => {
     setAudioVolume(vol);
+    setNativeTanpuraVolume(0.85 * vol);
     if (htmlAudioRef.current) {
       htmlAudioRef.current.volume = vol;
     }
     if (droneNodesRef.current) {
       try {
         const ctx = getAudioContext();
-        droneNodesRef.current.gain.gain.setValueAtTime(0.22 * vol, ctx.currentTime);
+        if (ctx) {
+          droneNodesRef.current.gain.gain.setValueAtTime(0.28 * vol, ctx.currentTime);
+        }
       } catch {
         // Ignore
       }
@@ -559,17 +555,39 @@ export const MediaArchive: React.FC = () => {
                       <FastForward className="w-4 h-4" />
                     </button>
 
-                    {/* Instant Sound Test Bell */}
+                    {/* Instant Sound Test Bell & Voice */}
                     <button
                       type="button"
                       onClick={() => playResonantGong(264, audioVolume)}
-                      title="Probar sonido de altavoces (Tocar campana tibetana)"
+                      title="Probar sonido de campana tibetana (Audio nativo directo)"
                       className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent)] hover:border-[var(--accent)] transition-all cursor-pointer flex items-center gap-1.5"
                     >
                       <Bell className="w-4 h-4" />
-                      <span className="text-xs font-semibold hidden sm:inline">Probar campana</span>
+                      <span className="text-xs font-semibold hidden sm:inline">Campana</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={testVoice}
+                      title="Probar reproducción de voz del narrador"
+                      className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-all cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-500" />
+                      <span className="text-xs font-semibold hidden sm:inline">Probar voz</span>
                     </button>
                   </div>
+
+                  {/* Active Equalizer Graphic when playing */}
+                  {isPlayingAudio && (
+                    <div className="flex items-center justify-center gap-1.5 mt-4">
+                      <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-5" style={{ animationDelay: '0ms' }} />
+                      <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-8" style={{ animationDelay: '150ms' }} />
+                      <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-6" style={{ animationDelay: '300ms' }} />
+                      <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-9" style={{ animationDelay: '75ms' }} />
+                      <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-4" style={{ animationDelay: '220ms' }} />
+                      <span className="text-xs text-[var(--accent)] font-medium ml-2">Audio y Tanpura emitiéndose...</span>
+                    </div>
+                  )}
 
                   {/* Volume Slider */}
                   <div className="flex items-center justify-center gap-3 mt-6 pt-4 border-t border-[var(--border-color)] max-w-xs mx-auto">
@@ -589,8 +607,29 @@ export const MediaArchive: React.FC = () => {
                   </div>
 
                   <p className="text-[11px] text-[var(--text-muted)] font-sans mt-3">
-                    Sonido meditativo armónico acústico de Tanpura india a 136.1 Hz (Om) y campanas sagradas a 432 Hz con recitación guiada.
+                    Sonido meditativo armónico acústico de Tanpura india a 432 Hz y campanas sagradas con recitación guiada.
                   </p>
+
+                  {/* Mobile Sound Helper Banner with Xiaomi 11T / Android specific advice */}
+                  <div className="mt-5 p-3.5 rounded-xl bg-[var(--accent-soft)] border border-[var(--border-color)] text-left flex items-start gap-3">
+                    <span className="text-xl shrink-0 mt-0.5">📱</span>
+                    <div className="text-xs text-[var(--text-secondary)] font-sans leading-relaxed">
+                      <strong className="text-[var(--text-primary)] block mb-1">
+                        ¿Tienes un Xiaomi (11T / MIUI / HyperOS) o Android y no suena?
+                      </strong>
+                      <ol className="list-decimal list-inside space-y-1 text-[11px]">
+                        <li>
+                          <strong>Volumen Multimedia:</strong> En Xiaomi, al pulsar los botones laterales de volumen, pulsa los <strong>tres puntos verticales (•••)</strong> que aparecen en pantalla y sube la barra de <strong>Música / Multimedia 🎵</strong> (los botones a veces solo cambian el tono de llamada).
+                        </li>
+                        <li>
+                          <strong>Prueba rápida:</strong> Pulsa el botón <strong>«🔔 Campana»</strong> arriba; si suena el timbre tibetano, el altavoz de tu móvil ya está activado.
+                        </li>
+                        <li>
+                          <strong>En PC:</strong> En el ordenador funcionará directamente al pulsar «▶ Reproducir Sesión Meditativa» o «Campana».
+                        </li>
+                      </ol>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

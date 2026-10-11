@@ -5,10 +5,12 @@ import {
   Pause,
   Square,
   Volume2,
+  VolumeX,
   Bell,
   X,
   Settings2,
   Sparkles,
+  HelpCircle,
 } from 'lucide-react';
 
 export const AudioPlayerBar: React.FC = () => {
@@ -21,6 +23,8 @@ export const AudioPlayerBar: React.FC = () => {
     progress,
     voices,
     selectedVoiceName,
+    speechError,
+    clearSpeechError,
     pauseSpeech,
     resumeSpeech,
     stopSpeech,
@@ -31,9 +35,76 @@ export const AudioPlayerBar: React.FC = () => {
   } = useAudioReader();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showMobileHelp, setShowMobileHelp] = useState(false);
 
-  if (!isPlaying && !isPaused) {
+  if (!isPlaying && !isPaused && !speechError) {
     return null;
+  }
+
+  // If there is an active error and player stopped, show friendly helper card
+  if (speechError && !isPlaying && !isPaused) {
+    return (
+      <aside
+        aria-label="Aviso de audio en dispositivo móvil"
+        className="fixed bottom-0 inset-x-0 z-50 p-3 sm:p-4 transition-all"
+      >
+        <div className="max-w-3xl mx-auto rounded-2xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/90 shadow-2xl p-4 backdrop-blur-md">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                <VolumeX className="w-5 h-5" />
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-sans font-bold text-sm text-[var(--text-primary)]">
+                  Configuración de Audio en Xiaomi / Android
+                </h4>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                  {speechError}
+                </p>
+                <div className="p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-color)] text-xs text-[var(--text-secondary)] space-y-1.5">
+                  <p className="font-semibold text-[var(--text-primary)]">
+                    🔧 Pasos rápidos para activar el sonido en tu Xiaomi 11T:
+                  </p>
+                  <p>
+                    1. <strong>Volumen Multimedia:</strong> Pulsa el botón de volumen físico lateral de tu Xiaomi, toca los <strong>tres puntos (...)</strong> y sube el deslizador de la <strong>nota musical 🎵</strong> (en Xiaomi, los botones solo tocan el timbre por defecto).
+                  </p>
+                  <p>
+                    2. <strong>Motor de Voz Google:</strong> Ve a <em>Ajustes de tu teléfono → Ajustes adicionales → Accesibilidad → Visión → Salida de síntesis de voz</em> y selecciona <strong>«Servicios de voz de Google»</strong> en idioma Español.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearSpeechError();
+                      playSingingBowl(264);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium cursor-pointer hover:opacity-90 flex items-center gap-1.5"
+                  >
+                    <Bell className="w-3.5 h-3.5" />
+                    Probar Campana Sonora
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearSpeechError}
+                    className="px-3 py-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-secondary)] text-xs cursor-pointer hover:text-[var(--text-primary)]"
+                  >
+                    Entendido
+                  </button>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={clearSpeechError}
+              className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </aside>
+    );
   }
 
   const speedOptions = [0.8, 1.0, 1.2, 1.5];
@@ -191,15 +262,35 @@ export const AudioPlayerBar: React.FC = () => {
               </select>
             </div>
 
-            {/* Quick test button */}
-            <button
-              type="button"
-              onClick={testVoice}
-              className="px-3 py-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors cursor-pointer flex items-center gap-1.5 self-start sm:self-auto"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Probar voz</span>
-            </button>
+            {/* Quick test button & Mobile Help */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={testVoice}
+                className="px-3 py-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors cursor-pointer flex items-center gap-1.5 self-start sm:self-auto"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Probar voz</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowMobileHelp(!showMobileHelp)}
+                className="px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer flex items-center gap-1"
+                title="Ayuda para móviles Xiaomi y Android"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>Móvil</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Mobile Help info popup if toggled */}
+        {settingsOpen && showMobileHelp && (
+          <div className="mt-3 p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-color)] text-xs text-[var(--text-secondary)] space-y-1">
+            <p className="font-semibold text-[var(--text-primary)]">📱 ¿No se oye en tu móvil Xiaomi o Android?</p>
+            <p>1. Pulsa los botones de volumen del teléfono y pulsa los tres puntos (...) para subir el volumen con el icono de la <strong>nota musical 🎵 (Multimedia)</strong>.</p>
+            <p>2. En Ajustes del Xiaomi → Accesibilidad → Visión → Síntesis de voz: cambia el motor a <strong>Servicios de voz de Google</strong>.</p>
           </div>
         )}
       </div>

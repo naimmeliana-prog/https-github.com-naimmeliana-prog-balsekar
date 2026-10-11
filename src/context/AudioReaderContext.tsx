@@ -1,4 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import {
+  playNativeBellAudio,
+  startNativeTanpuraDrone,
+  stopNativeTanpuraDrone,
+  setNativeTanpuraVolume,
+} from '../utils/audioGenerator';
 
 export interface VoiceOption {
   id: string;
@@ -19,6 +25,9 @@ interface AudioReaderContextType {
   ambientSound: boolean;
   voices: VoiceOption[];
   selectedVoiceName: string;
+  isMobile: boolean;
+  speechError: string | null;
+  clearSpeechError: () => void;
   speak: (text: string, title?: string, _audioFileUrl?: string) => void;
   pauseSpeech: () => void;
   resumeSpeech: () => void;
@@ -32,43 +41,124 @@ interface AudioReaderContextType {
 
 const AudioReaderContext = createContext<AudioReaderContextType | undefined>(undefined);
 
-// Split text into concise, natural spoken sentences
-function splitIntoSentences(rawText: string): string[] {
-  if (!rawText) return [];
-  const clean = rawText
-    .replace(/[«»""'']/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+// Detect mobile environment
+const checkIsMobile = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
 
-  // Split on sentence terminators (. ! ? ; or newline)
-  const rawParts = clean.split(/(?<=[.!?;\n])\s+/);
-  const sentences: string[] = [];
+// Singleton Web Audio Context to avoid hitting browser limits (especially iOS limit of 3-4 contexts)
+let sharedAudioCtx: AudioContext | null = null;
 
-  for (const part of rawParts) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-
-    // If a sentence is very long (> 180 chars), split by comma or colon for smooth speech
-    if (trimmed.length > 180) {
-      const subParts = trimmed.split(/(?<=[,:\u2014])\s+/);
-      let buffer = '';
-      for (const sp of subParts) {
-        if ((buffer + ' ' + sp).length > 180 && buffer) {
-          sentences.push(buffer.trim());
-          buffer = sp;
-        } else {
-          buffer = buffer ? `${buffer} ${sp}` : sp;
-        }
+export const getSharedAudioContext = (): AudioContext | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
+      const AudioCtxClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtxClass) {
+        sharedAudioCtx = new AudioCtxClass();
       }
-      if (buffer.trim()) {
-        sentences.push(buffer.trim());
-      }
-    } else {
-      sentences.push(trimmed);
+    }
+    if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+    return sharedAudioCtx;
+  } catch (err) {
+    console.warn('AudioContext creation failed:', err);
+    return null;
+  }
+};
+
+// Silent base64 WAV sound to activate iOS / Mobile Safari playback category (switches from Ambient to Playback)
+const SILENT_WAV_BASE64 =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
+let silentAudioTag: HTMLAudioElement | null = null;
+
+export const activateMobileAudioSession = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!silentAudioTag) {
+      silentAudioTag = new Audio(SILENT_WAV_BASE64);
+      silentAudioTag.setAttribute('playsinline', 'true');
+      silentAudioTag.setAttribute('webkit-playsinline', 'true');
+      silentAudioTag.volume = 0.01;
+    }
+    silentAudioTag.play().catch(() => {});
+  } catch {
+    // Ignore autoplay or restriction errors
+  }
+};
+
+export const unlockMobileAudio = () => {
+  activateMobileAudioSession();
+  const ctx = getSharedAudioContext();
+  if (ctx) {
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    try {
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+    } catch {
+      // Ignore
     }
   }
+};
 
-  return sentences.length > 0 ? sentences : [clean];
+// Resonant Tibetan Singing Bowl Chime (Dual pipeline: Native HTML5 Audio + Web Audio 432 Hz resonance)
+export const playSingingBowlSound = (freq: number = 264) => {
+  // 1. Play pristine native PCM WAV bell directly via HTML5 Audio (foolproof on Xiaomi 11T, iOS, Android, PC)
+  try {
+    playNativeBellAudio(0.95);
+  } catch (e) {
+    console.warn('Native bell failed:', e);
+  }
+
+  // 2. Also layer with Web Audio API synthesizer for rich acoustic resonance on devices supporting it
+  try {
+    unlockMobileAudio();
+    const ctx = getSharedAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const harmonics = [1, 2.76, 5.4, 8.1];
+    const gains = [0.42, 0.22, 0.08, 0.03];
+
+    harmonics.forEach((mult, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq * mult, now);
+
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(gains[i], now + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 3.8);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 4.0);
+    });
+  } catch (err) {
+    console.warn('Singing bowl Web Audio error:', err);
+  }
+};
+
+// Clean text for speech synthesis
+function cleanSpokenText(raw: string): string {
+  if (!raw) return '';
+  return raw
+    .replace(/[«»""'']/g, '')
+    .replace(/[*_#`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -81,101 +171,63 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [progress, setProgress] = useState<number>(0);
   const [ambientSound, setAmbientSound] = useState<boolean>(false);
   const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [isMobile] = useState<boolean>(checkIsMobile());
   const [selectedVoiceName, setSelectedVoiceName] = useState<string>(() => {
-    return localStorage.getItem('balsekar-voice') || '';
+    return (typeof window !== 'undefined' && localStorage.getItem('balsekar-voice')) || '';
   });
+  const [speechError, setSpeechError] = useState<string | null>(null);
 
-  // Internal refs to keep accurate state across closures
+  const clearSpeechError = useCallback(() => {
+    setSpeechError(null);
+  }, []);
+
   const speedRef = useRef<number>(1.0);
   const isCancelledRef = useRef<boolean>(false);
   const isPausedRef = useRef<boolean>(false);
-  const sentencesRef = useRef<string[]>([]);
-  const currentSentenceIdxRef = useRef<number>(0);
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const keepAliveIntervalRef = useRef<number | null>(null);
-
-  // Web Audio Context & Nodes
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const tanpuraNodesRef = useRef<{ oscillators: OscillatorNode[]; gain: GainNode } | null>(null);
+  const keepAliveIntervalRef = useRef<number | null>(null);
+  const progressTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
 
-  // AudioContext helper with auto-resume on user action
-  const getAudioContext = useCallback((): AudioContext => {
-    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      audioCtxRef.current = new AudioCtx();
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume().catch(() => {});
-    }
-    return audioCtxRef.current;
+  // Global mobile unlock listener on first user interaction
+  useEffect(() => {
+    const handleFirstInteraction = () => {
+      unlockMobileAudio();
+      window.removeEventListener('touchstart', handleFirstInteraction);
+      window.removeEventListener('touchend', handleFirstInteraction);
+      window.removeEventListener('click', handleFirstInteraction);
+    };
+
+    window.addEventListener('touchstart', handleFirstInteraction, { passive: true, once: true });
+    window.addEventListener('touchend', handleFirstInteraction, { passive: true, once: true });
+    window.addEventListener('click', handleFirstInteraction, { passive: true, once: true });
+
+    return () => {
+      window.removeEventListener('touchstart', handleFirstInteraction);
+      window.removeEventListener('touchend', handleFirstInteraction);
+      window.removeEventListener('click', handleFirstInteraction);
+    };
   }, []);
 
-  // Clear Chrome keepalive timer
-  const stopKeepAlive = useCallback(() => {
-    if (keepAliveIntervalRef.current) {
-      clearInterval(keepAliveIntervalRef.current);
-      keepAliveIntervalRef.current = null;
-    }
+  // Singing bowl wrapper
+  const playSingingBowl = useCallback((param?: number | unknown) => {
+    const freq = typeof param === 'number' ? param : 264;
+    playSingingBowlSound(freq);
   }, []);
 
-  // Start Chrome keepalive timer to prevent speech engine freezing on long utterances
-  const startKeepAlive = useCallback(() => {
-    stopKeepAlive();
-    keepAliveIntervalRef.current = window.setInterval(() => {
-      if ('speechSynthesis' in window && window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-        window.speechSynthesis.pause();
-        window.speechSynthesis.resume();
-      }
-    }, 4000);
-  }, [stopKeepAlive]);
-
-  // Resonant Tibetan Singing Bowl
-  const playSingingBowl = useCallback(
-    (param?: number | unknown) => {
-      const fundamental = typeof param === 'number' ? param : 264;
-      try {
-        const ctx = getAudioContext();
-        const now = ctx.currentTime;
-        const harmonics = [1, 2.76, 5.4, 8.1];
-        const gains = [0.4, 0.22, 0.09, 0.03];
-
-        harmonics.forEach((mult, i) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(fundamental * mult, now);
-
-          gain.gain.setValueAtTime(0, now);
-          gain.gain.linearRampToValueAtTime(gains[i], now + 0.03);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + 3.8);
-
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-
-          osc.start(now);
-          osc.stop(now + 4.0);
-        });
-      } catch (err) {
-        console.warn('Tibetan bowl audio error:', err);
-      }
-    },
-    [getAudioContext]
-  );
-
-  // Soothing Indian Tanpura Drone (136.1 Hz Om fundamental + fifth + octave)
+  // Soothing Indian Tanpura Drone (Dual pipeline: Native HTML5 Audio + Web Audio)
   const toggleAmbientSound = useCallback(() => {
     try {
-      const ctx = getAudioContext();
+      unlockMobileAudio();
+      const ctx = getSharedAudioContext();
 
       if (ambientSound) {
-        if (tanpuraNodesRef.current) {
+        stopNativeTanpuraDrone();
+        if (tanpuraNodesRef.current && ctx) {
           const now = ctx.currentTime;
           tanpuraNodesRef.current.gain.gain.linearRampToValueAtTime(0.0001, now + 0.6);
           setTimeout(() => {
@@ -194,51 +246,62 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
         setAmbientSound(false);
       } else {
-        const masterGain = ctx.createGain();
-        masterGain.gain.setValueAtTime(0.0001, ctx.currentTime);
-        masterGain.gain.linearRampToValueAtTime(0.18, ctx.currentTime + 1.0);
+        // 1. Start native HTML5 drone (plays reliably on Xiaomi 11T / Android)
+        startNativeTanpuraDrone(0.75);
 
-        const filter = ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(450, ctx.currentTime);
+        // 2. Also start Web Audio drone if context is available
+        if (ctx) {
+          const masterGain = ctx.createGain();
+          masterGain.gain.setValueAtTime(0.0001, ctx.currentTime);
+          masterGain.gain.linearRampToValueAtTime(0.22, ctx.currentTime + 1.0);
 
-        const chords = [
-          { freq: 136.1, vol: 0.35 },
-          { freq: 204.15, vol: 0.2 },
-          { freq: 272.2, vol: 0.15 },
-        ];
+          const filter = ctx.createBiquadFilter();
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(550, ctx.currentTime);
 
-        const oscillators: OscillatorNode[] = [];
+          const chords = [
+            { freq: 216.0, vol: 0.35 },  // Sa fundamental (audible on phones)
+            { freq: 324.0, vol: 0.25 },  // Pa fifth
+            { freq: 432.0, vol: 0.18 },  // High Sa
+            { freq: 648.0, vol: 0.08 },
+          ];
 
-        chords.forEach((c) => {
-          const osc = ctx.createOscillator();
-          const g = ctx.createGain();
+          const oscillators: OscillatorNode[] = [];
 
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(c.freq, ctx.currentTime);
-          g.gain.setValueAtTime(c.vol, ctx.currentTime);
+          chords.forEach((c) => {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
 
-          osc.connect(g);
-          g.connect(filter);
-          osc.start();
-          oscillators.push(osc);
-        });
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(c.freq, ctx.currentTime);
+            g.gain.setValueAtTime(c.vol, ctx.currentTime);
 
-        filter.connect(masterGain);
-        masterGain.connect(ctx.destination);
+            osc.connect(g);
+            g.connect(filter);
+            osc.start();
+            oscillators.push(osc);
+          });
 
-        tanpuraNodesRef.current = { oscillators, gain: masterGain };
+          filter.connect(masterGain);
+          masterGain.connect(ctx.destination);
+
+          tanpuraNodesRef.current = { oscillators, gain: masterGain };
+        }
+
         setAmbientSound(true);
+
+        // Gentle starting chime
+        playSingingBowlSound(264);
       }
     } catch (err) {
       console.warn('Ambient sound toggle error:', err);
       setAmbientSound(false);
     }
-  }, [ambientSound, getAudioContext]);
+  }, [ambientSound]);
 
-  // Load and refresh available system voices
+  // Load and refresh available voices
   const refreshVoices = useCallback((): VoiceOption[] => {
-    if (!('speechSynthesis' in window)) return [];
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return [];
     try {
       const raw = window.speechSynthesis.getVoices();
       if (!raw || raw.length === 0) return [];
@@ -250,12 +313,13 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         const signature = `${v.name}|${v.lang}|${v.voiceURI || idx}`;
         if (!seen.has(signature)) {
           seen.add(signature);
+          const isSpanish = v.lang.toLowerCase().startsWith('es') || v.lang.toLowerCase().includes('es-');
           list.push({
             id: `v-${idx}-${v.name.replace(/[^a-zA-Z0-9]/g, '_')}-${v.lang}`,
             voice: v,
             name: v.name,
             lang: v.lang,
-            isSpanish: v.lang.toLowerCase().startsWith('es'),
+            isSpanish,
           });
         }
       });
@@ -283,7 +347,7 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, []);
 
   useEffect(() => {
-    if ('speechSynthesis' in window) {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       refreshVoices();
       window.speechSynthesis.onvoiceschanged = () => {
         refreshVoices();
@@ -291,16 +355,30 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, [refreshVoices]);
 
+  // Clear timers
+  const clearTimers = useCallback(() => {
+    if (keepAliveIntervalRef.current) {
+      clearInterval(keepAliveIntervalRef.current);
+      keepAliveIntervalRef.current = null;
+    }
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+  }, []);
+
   // Stop speech playback completely
   const stopSpeech = useCallback(() => {
     isCancelledRef.current = true;
     isPausedRef.current = false;
     currentUtteranceRef.current = null;
-    (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = null;
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = null;
+    }
 
-    stopKeepAlive();
+    clearTimers();
 
-    if ('speechSynthesis' in window) {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
       } catch {
@@ -312,118 +390,157 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setIsPaused(false);
     setProgress(0);
     setCurrentSentence('');
-  }, [stopKeepAlive]);
+  }, [clearTimers]);
 
-  // Play next sentence in queue
-  const playSentenceAtIndex = useCallback(
-    (index: number) => {
-      if (isCancelledRef.current || isPausedRef.current) return;
-      if (!('speechSynthesis' in window)) return;
-
-      const sentences = sentencesRef.current;
-      if (index >= sentences.length) {
-        // Queue completed! Play gentle concluding chime
-        playSingingBowl(330);
-        stopSpeech();
-        return;
-      }
-
-      currentSentenceIdxRef.current = index;
-      const sentenceText = sentences[index];
-      setCurrentSentence(sentenceText);
-
-      const pct = Math.round(((index + 1) / sentences.length) * 100);
-      setProgress(pct);
-
-      const utterance = new SpeechSynthesisUtterance(sentenceText);
-      currentUtteranceRef.current = utterance;
-      // Shield against Chromium GC bug
-      (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = utterance;
-
-      utterance.rate = speedRef.current;
-      utterance.lang = 'es-ES';
-
-      // Pick preferred voice
-      const currentVoices = voices.length > 0 ? voices : refreshVoices();
-      let chosenVoice = currentVoices.find((v) => v.name === selectedVoiceName);
-      if (!chosenVoice) {
-        chosenVoice = currentVoices.find((v) => v.isSpanish) || currentVoices[0];
-      }
-      if (chosenVoice) {
-        utterance.voice = chosenVoice.voice;
-      }
-
-      utterance.onstart = () => {
-        if (!isCancelledRef.current && !isPausedRef.current) {
-          setIsPlaying(true);
-          setIsPaused(false);
-        }
-      };
-
-      utterance.onend = () => {
-        if (isCancelledRef.current || isPausedRef.current) return;
-        // Proceed to next sentence
-        playSentenceAtIndex(index + 1);
-      };
-
-      utterance.onerror = (e) => {
-        if (e.error === 'interrupted' || e.error === 'canceled') {
-          return;
-        }
-        console.warn('SpeechSynthesis error:', e.error);
-        if (!isCancelledRef.current && !isPausedRef.current) {
-          // Attempt next sentence rather than halting entire queue
-          playSentenceAtIndex(index + 1);
-        }
-      };
-
-      try {
-        window.speechSynthesis.speak(utterance);
-      } catch (err) {
-        console.warn('window.speechSynthesis.speak error:', err);
-      }
-    },
-    [voices, refreshVoices, selectedVoiceName, playSingingBowl, stopSpeech]
-  );
-
-  // Main Speak function: Synchronous, instant, zero-delay speech playback!
+  // Main Speak function - Mobile hardened with zero delay & single utterance resilience
   const speak = useCallback(
     (text: string, title: string = 'Lectura de Enseñanza', _audioFileUrl?: string) => {
-      if (!text) return;
+      if (!text || typeof window === 'undefined') return;
 
-      // 1. Cancel previous speech immediately
+      // Unlock mobile audio right on user gesture
+      unlockMobileAudio();
+      setSpeechError(null);
+
       isCancelledRef.current = false;
       isPausedRef.current = false;
-      if ('speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel();
-        } catch {
-          // Ignore
-        }
-      }
+      clearTimers();
 
-      // 2. Play acoustic bell
-      playSingingBowl(264);
+      const clean = cleanSpokenText(text);
+      if (!clean) return;
 
-      // 3. Prepare sentence queue
-      const sentences = splitIntoSentences(text);
-      sentencesRef.current = sentences;
-      currentSentenceIdxRef.current = 0;
+      // Play soft harmonic chime at start
+      playSingingBowlSound(264);
 
       setCurrentTitle(title);
-      setCurrentText(text);
-      setCurrentSentence(sentences[0] || text);
+      setCurrentText(clean);
+      setCurrentSentence(clean.slice(0, 120) + (clean.length > 120 ? '...' : ''));
       setIsPlaying(true);
       setIsPaused(false);
       setProgress(5);
 
-      // 4. Start keepalive timer
-      startKeepAlive();
+      if (!('speechSynthesis' in window)) {
+        // Fallback for environments lacking Web Speech API
+        console.warn('SpeechSynthesis not available in this browser.');
+        return;
+      }
 
-      // 5. Speak first sentence immediately within user gesture tick!
-      playSentenceAtIndex(0);
+      // Chromium/Android fix: Unpause if stuck and cancel safely
+      try {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.cancel();
+        }
+      } catch {
+        // Ignore
+      }
+
+      const executeSpeak = () => {
+        if (isCancelledRef.current) return;
+
+        try {
+          const utterance = new SpeechSynthesisUtterance(clean);
+          currentUtteranceRef.current = utterance;
+          // Protect from aggressive mobile garbage collection
+          (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = utterance;
+
+          utterance.rate = speedRef.current;
+          utterance.pitch = 1.0;
+          utterance.volume = 1.0;
+          utterance.lang = 'es-ES';
+
+          // Voice selection: prioritize Spanish voices
+          const currentVoices = voices.length > 0 ? voices : refreshVoices();
+          let chosenVoice = currentVoices.find((v) => v.name === selectedVoiceName);
+
+          if (!chosenVoice || !chosenVoice.isSpanish) {
+            // Pick any verified Spanish voice
+            chosenVoice = currentVoices.find((v) => v.isSpanish);
+          }
+
+          if (chosenVoice && chosenVoice.isSpanish) {
+            utterance.voice = chosenVoice.voice;
+            utterance.lang = chosenVoice.lang;
+          }
+
+          // Word/boundary tracking for real-time sentence highlight and progress
+          utterance.onboundary = (event) => {
+            if (isCancelledRef.current) return;
+            const charIdx = event.charIndex || 0;
+            const pct = Math.min(98, Math.max(5, Math.round((charIdx / clean.length) * 100)));
+            setProgress(pct);
+
+            const sliceStart = Math.max(0, clean.lastIndexOf('.', charIdx) + 1);
+            const sliceEnd = clean.indexOf('.', charIdx + 1);
+            const snippet = clean.slice(sliceStart, sliceEnd !== -1 ? sliceEnd + 1 : undefined).trim();
+            if (snippet) {
+              setCurrentSentence(snippet);
+            }
+          };
+
+          utterance.onstart = () => {
+            if (!isCancelledRef.current) {
+              setIsPlaying(true);
+              setIsPaused(false);
+            }
+          };
+
+          utterance.onend = () => {
+            if (isCancelledRef.current) return;
+            setProgress(100);
+            playSingingBowlSound(330);
+            setTimeout(() => {
+              stopSpeech();
+            }, 600);
+          };
+
+          utterance.onerror = (e) => {
+            if (e.error === 'interrupted' || e.error === 'canceled') {
+              return;
+            }
+            console.warn('SpeechSynthesis error:', e.error);
+            setSpeechError(
+              `El sintetizador de voz de tu dispositivo móvil no pudo emitir el audio (${e.error || 'fallo'}). Solución para Xiaomi/Android: Ve a Ajustes > Accesibilidad > Síntesis de voz y selecciona "Servicios de voz de Google" en español, y asegúrate de que el Volumen Multimedia (nota musical) no esté al mínimo.`
+            );
+            stopSpeech();
+          };
+
+          // On desktop Chrome only, run keepalive timer
+          if (!checkIsMobile()) {
+            keepAliveIntervalRef.current = window.setInterval(() => {
+              if (
+                'speechSynthesis' in window &&
+                window.speechSynthesis.speaking &&
+                !window.speechSynthesis.paused
+              ) {
+                window.speechSynthesis.pause();
+                window.speechSynthesis.resume();
+              }
+            }, 5000);
+          }
+
+          // Progress estimate fallback in case onboundary is not supported by device
+          const words = clean.split(' ').length;
+          const estimatedDurationSeconds = Math.max(5, words / (2.5 * speedRef.current));
+          let elapsed = 0;
+          progressTimerRef.current = window.setInterval(() => {
+            elapsed += 0.5;
+            const calcPct = Math.min(95, Math.round((elapsed / estimatedDurationSeconds) * 100));
+            setProgress((prev) => Math.max(prev, calcPct));
+          }, 500);
+
+          // Crucial: Must be synchronous within gesture for mobile Chrome / Xiaomi
+          window.speechSynthesis.speak(utterance);
+        } catch (err) {
+          console.warn('window.speechSynthesis.speak error:', err);
+        }
+      };
+
+      // Always execute synchronously within user gesture
+      executeSpeak();
     },
-    [playSingingBowl, startKeepAlive, playSentenceAtIndex]
+    [voices, refreshVoices, selectedVoiceName, clearTimers, stopSpeech]
   );
 
   // Pause speech
@@ -431,16 +548,16 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     isPausedRef.current = true;
     setIsPaused(true);
     setIsPlaying(false);
-    stopKeepAlive();
+    clearTimers();
 
-    if ('speechSynthesis' in window) {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.pause();
       } catch {
         // Ignore
       }
     }
-  }, [stopKeepAlive]);
+  }, [clearTimers]);
 
   // Resume speech
   const resumeSpeech = useCallback(() => {
@@ -448,43 +565,39 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     isCancelledRef.current = false;
     setIsPaused(false);
     setIsPlaying(true);
-    startKeepAlive();
 
-    if ('speechSynthesis' in window) {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
-        } else {
-          // Re-trigger current sentence if paused stalled
-          playSentenceAtIndex(currentSentenceIdxRef.current);
+        } else if (currentText) {
+          speak(currentText, currentTitle);
         }
       } catch {
-        playSentenceAtIndex(currentSentenceIdxRef.current);
+        if (currentText) {
+          speak(currentText, currentTitle);
+        }
       }
     }
-  }, [startKeepAlive, playSentenceAtIndex]);
+  }, [currentText, currentTitle, speak]);
 
   // Speed adjustments
   const setSpeed = useCallback(
     (newSpeed: number) => {
       setSpeedState(newSpeed);
       speedRef.current = newSpeed;
-      // If currently playing, restart current sentence with new rate
-      if (isPlaying && !isPaused && 'speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel();
-          playSentenceAtIndex(currentSentenceIdxRef.current);
-        } catch {
-          // Ignore
-        }
+      if (isPlaying && !isPaused && currentText) {
+        speak(currentText, currentTitle);
       }
     },
-    [isPlaying, isPaused, playSentenceAtIndex]
+    [isPlaying, isPaused, currentText, currentTitle, speak]
   );
 
   const handleSetVoice = useCallback((name: string) => {
     setSelectedVoiceName(name);
-    localStorage.setItem('balsekar-voice', name);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('balsekar-voice', name);
+    }
   }, []);
 
   const testVoice = useCallback(() => {
@@ -525,6 +638,9 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         ambientSound,
         voices,
         selectedVoiceName,
+        isMobile,
+        speechError,
+        clearSpeechError,
         speak,
         pauseSpeech,
         resumeSpeech,
