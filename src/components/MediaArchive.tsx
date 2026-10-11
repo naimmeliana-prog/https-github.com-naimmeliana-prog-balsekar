@@ -79,8 +79,8 @@ export const MediaArchive: React.FC = () => {
       GUIDED_CONTEMPLATIONS[selectedMedia.id] ||
       `${selectedMedia.title}. ${selectedMedia.description}. ${selectedMedia.transcriptExcerpt}`;
 
-    // Speak the guided contemplation with clean browser text-to-speech
-    speak(contemplation, selectedMedia.title);
+    // Speak the guided contemplation with dual engine (Audio file / Text-to-speech)
+    speak(contemplation, selectedMedia.title, selectedMedia.audioUrl);
 
     // Timeline tracker
     if (audioIntervalRef.current) {
