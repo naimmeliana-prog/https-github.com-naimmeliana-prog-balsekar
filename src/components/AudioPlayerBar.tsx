@@ -6,7 +6,6 @@ import {
   Square,
   Volume2,
   VolumeX,
-  Bell,
   X,
   Settings2,
   Sparkles,
@@ -30,7 +29,6 @@ export const AudioPlayerBar: React.FC = () => {
     stopSpeech,
     setSpeed,
     setSelectedVoiceName,
-    playSingingBowl,
     testVoice,
   } = useAudioReader();
 
@@ -77,12 +75,12 @@ export const AudioPlayerBar: React.FC = () => {
                     type="button"
                     onClick={() => {
                       clearSpeechError();
-                      playSingingBowl(264);
+                      testVoice();
                     }}
                     className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium cursor-pointer hover:opacity-90 flex items-center gap-1.5"
                   >
-                    <Bell className="w-3.5 h-3.5" />
-                    Probar Campana Sonora
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Probar voz de narración
                   </button>
                   <button
                     type="button"
@@ -212,16 +210,6 @@ export const AudioPlayerBar: React.FC = () => {
               }`}
             >
               <Settings2 className="w-4 h-4" />
-            </button>
-
-            {/* Bell Chime */}
-            <button
-              type="button"
-              onClick={playSingingBowl}
-              title="Tocar campana tibetana"
-              className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-all cursor-pointer"
-            >
-              <Bell className="w-4 h-4" />
             </button>
 
             {/* Close */}

@@ -1,10 +1,4 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import {
-  playNativeBellAudio,
-  startNativeTanpuraDrone,
-  stopNativeTanpuraDrone,
-  setNativeTanpuraVolume,
-} from '../utils/audioGenerator';
 
 export interface VoiceOption {
   id: string;
@@ -47,118 +41,64 @@ const checkIsMobile = (): boolean => {
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 };
 
-// Singleton Web Audio Context to avoid hitting browser limits (especially iOS limit of 3-4 contexts)
-let sharedAudioCtx: AudioContext | null = null;
+// Global pool of active utterances to prevent V8 mobile garbage collection mid-speech
+const activeUtterancesPool: SpeechSynthesisUtterance[] = [];
 
-export const getSharedAudioContext = (): AudioContext | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
-      const AudioCtxClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioCtxClass) {
-        sharedAudioCtx = new AudioCtxClass();
-      }
-    }
-    if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
-      sharedAudioCtx.resume().catch(() => {});
-    }
-    return sharedAudioCtx;
-  } catch (err) {
-    console.warn('AudioContext creation failed:', err);
-    return null;
-  }
-};
-
-// Silent base64 WAV sound to activate iOS / Mobile Safari playback category (switches from Ambient to Playback)
-const SILENT_WAV_BASE64 =
-  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
-let silentAudioTag: HTMLAudioElement | null = null;
-
-export const activateMobileAudioSession = () => {
-  if (typeof window === 'undefined') return;
-  try {
-    if (!silentAudioTag) {
-      silentAudioTag = new Audio(SILENT_WAV_BASE64);
-      silentAudioTag.setAttribute('playsinline', 'true');
-      silentAudioTag.setAttribute('webkit-playsinline', 'true');
-      silentAudioTag.volume = 0.01;
-    }
-    silentAudioTag.play().catch(() => {});
-  } catch {
-    // Ignore autoplay or restriction errors
-  }
-};
-
-export const unlockMobileAudio = () => {
-  activateMobileAudioSession();
-  const ctx = getSharedAudioContext();
-  if (ctx) {
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
+/**
+ * Backward compatible stubs without AudioContext or oscillators
+ * Zero background buzzing, zero drones, zero bells
+ */
+export const getSharedAudioContext = (): null => null;
+export const activateMobileAudioSession = (): void => {};
+export const unlockMobileAudio = (): void => {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
-      const buffer = ctx.createBuffer(1, 1, 22050);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      source.start(0);
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
     } catch {
       // Ignore
     }
   }
 };
-
-// Resonant Tibetan Singing Bowl Chime (Dual pipeline: Native HTML5 Audio + Web Audio 432 Hz resonance)
-export const playSingingBowlSound = (freq: number = 264) => {
-  // 1. Play pristine native PCM WAV bell directly via HTML5 Audio (foolproof on Xiaomi 11T, iOS, Android, PC)
-  try {
-    playNativeBellAudio(0.95);
-  } catch (e) {
-    console.warn('Native bell failed:', e);
-  }
-
-  // 2. Also layer with Web Audio API synthesizer for rich acoustic resonance on devices supporting it
-  try {
-    unlockMobileAudio();
-    const ctx = getSharedAudioContext();
-    if (!ctx) return;
-
-    const now = ctx.currentTime;
-    const harmonics = [1, 2.76, 5.4, 8.1];
-    const gains = [0.42, 0.22, 0.08, 0.03];
-
-    harmonics.forEach((mult, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq * mult, now);
-
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(gains[i], now + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 3.8);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start(now);
-      osc.stop(now + 4.0);
-    });
-  } catch (err) {
-    console.warn('Singing bowl Web Audio error:', err);
-  }
-};
+export const playSingingBowlSound = (_freq: number = 264): void => {};
 
 // Clean text for speech synthesis
 function cleanSpokenText(raw: string): string {
   if (!raw) return '';
   return raw
     .replace(/[«»""'']/g, '')
-    .replace(/[*_#`]/g, '')
+    .replace(/[*_#`~^]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Split long text into natural, digestible sentence chunks (~80-160 chars).
+ * Critical for Android Chrome / Xiaomi 11T: completely prevents the 15-second speech synthesis abort bug.
+ */
+function splitIntoChunks(text: string): string[] {
+  if (!text) return [];
+  const rawSentences = text.match(/[^.!?;\n]+[.!?;\n]+/g) || [text];
+  const chunks: string[] = [];
+  let currentChunk = '';
+
+  for (const s of rawSentences) {
+    const trimmed = s.trim();
+    if (!trimmed) continue;
+    if (currentChunk.length + trimmed.length < 150) {
+      currentChunk = currentChunk ? `${currentChunk} ${trimmed}` : trimmed;
+    } else {
+      if (currentChunk) chunks.push(currentChunk);
+      currentChunk = trimmed;
+    }
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks.length > 0 ? chunks : [text];
 }
 
 export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -169,11 +109,14 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [currentSentence, setCurrentSentence] = useState<string>('');
   const [speed, setSpeedState] = useState<number>(1.0);
   const [progress, setProgress] = useState<number>(0);
-  const [ambientSound, setAmbientSound] = useState<boolean>(false);
+  const [ambientSound] = useState<boolean>(false);
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [isMobile] = useState<boolean>(checkIsMobile());
   const [selectedVoiceName, setSelectedVoiceName] = useState<string>(() => {
     return (typeof window !== 'undefined' && localStorage.getItem('balsekar-voice')) || '';
+  });
+  const [userExplicitlyChoseVoice, setUserExplicitlyChoseVoice] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && Boolean(localStorage.getItem('balsekar-voice'));
   });
   const [speechError, setSpeechError] = useState<string | null>(null);
 
@@ -183,123 +126,14 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const speedRef = useRef<number>(1.0);
   const isCancelledRef = useRef<boolean>(false);
-  const isPausedRef = useRef<boolean>(false);
-  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const tanpuraNodesRef = useRef<{ oscillators: OscillatorNode[]; gain: GainNode } | null>(null);
-  const keepAliveIntervalRef = useRef<number | null>(null);
-  const progressTimerRef = useRef<number | null>(null);
+  const chunksRef = useRef<string[]>([]);
+  const currentChunkIndexRef = useRef<number>(0);
 
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
 
-  // Global mobile unlock listener on first user interaction
-  useEffect(() => {
-    const handleFirstInteraction = () => {
-      unlockMobileAudio();
-      window.removeEventListener('touchstart', handleFirstInteraction);
-      window.removeEventListener('touchend', handleFirstInteraction);
-      window.removeEventListener('click', handleFirstInteraction);
-    };
-
-    window.addEventListener('touchstart', handleFirstInteraction, { passive: true, once: true });
-    window.addEventListener('touchend', handleFirstInteraction, { passive: true, once: true });
-    window.addEventListener('click', handleFirstInteraction, { passive: true, once: true });
-
-    return () => {
-      window.removeEventListener('touchstart', handleFirstInteraction);
-      window.removeEventListener('touchend', handleFirstInteraction);
-      window.removeEventListener('click', handleFirstInteraction);
-    };
-  }, []);
-
-  // Singing bowl wrapper
-  const playSingingBowl = useCallback((param?: number | unknown) => {
-    const freq = typeof param === 'number' ? param : 264;
-    playSingingBowlSound(freq);
-  }, []);
-
-  // Soothing Indian Tanpura Drone (Dual pipeline: Native HTML5 Audio + Web Audio)
-  const toggleAmbientSound = useCallback(() => {
-    try {
-      unlockMobileAudio();
-      const ctx = getSharedAudioContext();
-
-      if (ambientSound) {
-        stopNativeTanpuraDrone();
-        if (tanpuraNodesRef.current && ctx) {
-          const now = ctx.currentTime;
-          tanpuraNodesRef.current.gain.gain.linearRampToValueAtTime(0.0001, now + 0.6);
-          setTimeout(() => {
-            if (tanpuraNodesRef.current) {
-              tanpuraNodesRef.current.oscillators.forEach((osc) => {
-                try {
-                  osc.stop();
-                  osc.disconnect();
-                } catch {
-                  // Ignore
-                }
-              });
-              tanpuraNodesRef.current = null;
-            }
-          }, 700);
-        }
-        setAmbientSound(false);
-      } else {
-        // 1. Start native HTML5 drone (plays reliably on Xiaomi 11T / Android)
-        startNativeTanpuraDrone(0.75);
-
-        // 2. Also start Web Audio drone if context is available
-        if (ctx) {
-          const masterGain = ctx.createGain();
-          masterGain.gain.setValueAtTime(0.0001, ctx.currentTime);
-          masterGain.gain.linearRampToValueAtTime(0.22, ctx.currentTime + 1.0);
-
-          const filter = ctx.createBiquadFilter();
-          filter.type = 'lowpass';
-          filter.frequency.setValueAtTime(550, ctx.currentTime);
-
-          const chords = [
-            { freq: 216.0, vol: 0.35 },  // Sa fundamental (audible on phones)
-            { freq: 324.0, vol: 0.25 },  // Pa fifth
-            { freq: 432.0, vol: 0.18 },  // High Sa
-            { freq: 648.0, vol: 0.08 },
-          ];
-
-          const oscillators: OscillatorNode[] = [];
-
-          chords.forEach((c) => {
-            const osc = ctx.createOscillator();
-            const g = ctx.createGain();
-
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(c.freq, ctx.currentTime);
-            g.gain.setValueAtTime(c.vol, ctx.currentTime);
-
-            osc.connect(g);
-            g.connect(filter);
-            osc.start();
-            oscillators.push(osc);
-          });
-
-          filter.connect(masterGain);
-          masterGain.connect(ctx.destination);
-
-          tanpuraNodesRef.current = { oscillators, gain: masterGain };
-        }
-
-        setAmbientSound(true);
-
-        // Gentle starting chime
-        playSingingBowlSound(264);
-      }
-    } catch (err) {
-      console.warn('Ambient sound toggle error:', err);
-      setAmbientSound(false);
-    }
-  }, [ambientSound]);
-
-  // Load and refresh available voices
+  // Voice enumeration and refresh logic with multi-stage Android polling
   const refreshVoices = useCallback((): VoiceOption[] => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return [];
     try {
@@ -313,7 +147,8 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         const signature = `${v.name}|${v.lang}|${v.voiceURI || idx}`;
         if (!seen.has(signature)) {
           seen.add(signature);
-          const isSpanish = v.lang.toLowerCase().startsWith('es') || v.lang.toLowerCase().includes('es-');
+          const langLower = v.lang.toLowerCase();
+          const isSpanish = langLower.startsWith('es') || langLower.includes('es-');
           list.push({
             id: `v-${idx}-${v.name.replace(/[^a-zA-Z0-9]/g, '_')}-${v.lang}`,
             voice: v,
@@ -324,6 +159,7 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       });
 
+      // Sort: Spanish voices first, then alphabetical
       list.sort((a, b) => {
         if (a.isSpanish && !b.isSpanish) return -1;
         if (!a.isSpanish && b.isSpanish) return 1;
@@ -332,12 +168,16 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       setVoices(list);
 
+      // On desktop, auto-select Spanish voice if none selected. On mobile, leave default unless user picked
       setSelectedVoiceName((curr) => {
         if (curr && list.some((v) => v.name === curr)) {
           return curr;
         }
-        const spanish = list.find((v) => v.isSpanish);
-        return spanish ? spanish.name : list[0]?.name || '';
+        if (!checkIsMobile()) {
+          const spanish = list.find((v) => v.isSpanish);
+          return spanish ? spanish.name : list[0]?.name || '';
+        }
+        return curr;
       });
 
       return list;
@@ -346,41 +186,53 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, []);
 
+  // Robust initialization of voices for Mobile Chromium / Xiaomi MIUI
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      refreshVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        refreshVoices();
-      };
-    }
-  }, [refreshVoices]);
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
 
-  // Clear timers
-  const clearTimers = useCallback(() => {
-    if (keepAliveIntervalRef.current) {
-      clearInterval(keepAliveIntervalRef.current);
-      keepAliveIntervalRef.current = null;
-    }
-    if (progressTimerRef.current) {
-      clearInterval(progressTimerRef.current);
-      progressTimerRef.current = null;
-    }
-  }, []);
+    // 1. Initial wake-up call
+    refreshVoices();
+
+    // 2. Standard voiceschanged event listener
+    const onVoices = () => {
+      refreshVoices();
+    };
+
+    window.speechSynthesis.addEventListener('voiceschanged', onVoices);
+    window.speechSynthesis.onvoiceschanged = onVoices;
+
+    // 3. Android polling fallback (staggered) because on Xiaomi MIUI
+    // 'voiceschanged' fires asynchronously or after the first user gesture
+    const pollDelays = [150, 450, 900, 1800, 3000];
+    const timers = pollDelays.map((delay) =>
+      window.setTimeout(() => {
+        refreshVoices();
+      }, delay)
+    );
+
+    return () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', onVoices);
+      timers.forEach((t) => clearTimeout(t));
+    };
+  }, [refreshVoices]);
 
   // Stop speech playback completely
   const stopSpeech = useCallback(() => {
     isCancelledRef.current = true;
-    isPausedRef.current = false;
-    currentUtteranceRef.current = null;
+    chunksRef.current = [];
+    currentChunkIndexRef.current = 0;
+
+    // Clear active utterance pool
+    activeUtterancesPool.length = 0;
     if (typeof window !== 'undefined') {
       (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = null;
     }
 
-    clearTimers();
-
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
-        window.speechSynthesis.cancel();
+        if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+          window.speechSynthesis.cancel();
+        }
       } catch {
         // Ignore
       }
@@ -390,165 +242,190 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setIsPaused(false);
     setProgress(0);
     setCurrentSentence('');
-  }, [clearTimers]);
+  }, []);
 
-  // Main Speak function - Mobile hardened with zero delay & single utterance resilience
+  // Internal function to speak an individual chunk with Xiaomi 11T / Android resilience
+  const speakChunk = useCallback(
+    (index: number) => {
+      if (isCancelledRef.current || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        return;
+      }
+
+      const chunks = chunksRef.current;
+      if (!chunks || index >= chunks.length) {
+        // All chunks finished!
+        setIsPlaying(false);
+        setIsPaused(false);
+        setProgress(100);
+        setTimeout(() => {
+          stopSpeech();
+        }, 200);
+        return;
+      }
+
+      currentChunkIndexRef.current = index;
+      const textToSpeak = chunks[index];
+      setCurrentSentence(textToSpeak);
+
+      // Progress percentage
+      const progressPct = Math.min(98, Math.max(5, Math.round(((index + 1) / chunks.length) * 100)));
+      setProgress(progressPct);
+
+      try {
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+
+        // Keep active reference to prevent mobile V8 garbage collection mid-sentence
+        activeUtterancesPool.push(utterance);
+        (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = utterance;
+
+        utterance.rate = Math.min(1.4, Math.max(0.7, speedRef.current));
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        // Determine best Spanish language tag
+        const currentVoices = voices.length > 0 ? voices : window.speechSynthesis.getVoices();
+        const detectedSpanish = currentVoices.find((v) => {
+          const l = ('lang' in v ? v.lang : '').toLowerCase();
+          return l.startsWith('es') || l.includes('es-');
+        });
+
+        // Set utterance language tag
+        utterance.lang = detectedSpanish?.lang || 'es-ES';
+
+        // Voice matching rules:
+        // CRITICAL FOR XIAOMI 11T & ANDROID CHROME:
+        // Assigning utterance.voice to a remote or non-local SpeechSynthesisVoice object
+        // in Chromium on Android is the #1 cause of 'synthesis-failed'.
+        // On mobile, leaving utterance.voice undefined and setting utterance.lang allows
+        // the Android OS native TTS service (Google Speech Services / Xiaomi TTS) to speak
+        // with 100% reliability directly through AudioManager.STREAM_MUSIC.
+        const isMobileDevice = checkIsMobile();
+
+        if (!isMobileDevice) {
+          // Desktop PC (Windows 11 / Mac): assign voice object normally
+          let chosenVoice = currentVoices.find((v) => v.name === selectedVoiceName);
+          if (!chosenVoice && detectedSpanish) {
+            chosenVoice = detectedSpanish;
+          }
+          if (chosenVoice) {
+            const voiceObj = 'voice' in chosenVoice ? (chosenVoice as VoiceOption).voice : (chosenVoice as SpeechSynthesisVoice);
+            if (voiceObj) {
+              utterance.voice = voiceObj;
+            }
+          }
+        } else if (userExplicitlyChoseVoice && selectedVoiceName) {
+          // Mobile, only if user explicitly picked a voice from dropdown
+          const chosenVoice = currentVoices.find((v) => v.name === selectedVoiceName);
+          if (chosenVoice) {
+            const voiceObj = 'voice' in chosenVoice ? (chosenVoice as VoiceOption).voice : (chosenVoice as SpeechSynthesisVoice);
+            if (voiceObj) {
+              utterance.voice = voiceObj;
+            }
+          }
+        }
+
+        utterance.onstart = () => {
+          if (!isCancelledRef.current) {
+            setIsPlaying(true);
+            setIsPaused(false);
+          }
+        };
+
+        utterance.onend = () => {
+          // Remove from active pool
+          const idx = activeUtterancesPool.indexOf(utterance);
+          if (idx !== -1) activeUtterancesPool.splice(idx, 1);
+
+          if (isCancelledRef.current) return;
+          // Speak next chunk seamlessly
+          speakChunk(index + 1);
+        };
+
+        utterance.onerror = (e) => {
+          // Remove from active pool
+          const idx = activeUtterancesPool.indexOf(utterance);
+          if (idx !== -1) activeUtterancesPool.splice(idx, 1);
+
+          if (e.error === 'interrupted' || e.error === 'canceled') {
+            return;
+          }
+          console.warn('SpeechSynthesis error on chunk:', e.error);
+
+          setSpeechError(
+            `El sintetizador de voz de tu dispositivo móvil no pudo emitir sonido (${e.error || 'fallo'}). En tu Xiaomi 11T, pulsa los botones de volumen físico, toca los tres puntos (•••) y sube la barra de Multimedia 🎵 (nota musical).`
+          );
+          stopSpeech();
+        };
+
+        // Resume if suspended on Android
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn('SpeechSynthesis invocation error:', err);
+      }
+    },
+    [voices, selectedVoiceName, userExplicitlyChoseVoice, stopSpeech]
+  );
+
+  // Main Speak function - Executed SYNCHRONOUSLY within trusted user gesture stack
   const speak = useCallback(
     (text: string, title: string = 'Lectura de Enseñanza', _audioFileUrl?: string) => {
       if (!text || typeof window === 'undefined') return;
 
-      // Unlock mobile audio right on user gesture
-      unlockMobileAudio();
       setSpeechError(null);
-
       isCancelledRef.current = false;
-      isPausedRef.current = false;
-      clearTimers();
 
       const clean = cleanSpokenText(text);
       if (!clean) return;
 
-      // Play soft harmonic chime at start
-      playSingingBowlSound(264);
-
       setCurrentTitle(title);
       setCurrentText(clean);
-      setCurrentSentence(clean.slice(0, 120) + (clean.length > 120 ? '...' : ''));
       setIsPlaying(true);
       setIsPaused(false);
       setProgress(5);
 
       if (!('speechSynthesis' in window)) {
-        // Fallback for environments lacking Web Speech API
-        console.warn('SpeechSynthesis not available in this browser.');
+        setSpeechError('Tu navegador no es compatible con la síntesis de voz (Web Speech API).');
         return;
       }
 
-      // Chromium/Android fix: Unpause if stuck and cancel safely
+      // Android/Chromium fix: Resume if stuck or paused
       try {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
-        }
-        if (window.speechSynthesis.speaking) {
-          window.speechSynthesis.cancel();
         }
       } catch {
         // Ignore
       }
 
-      const executeSpeak = () => {
-        if (isCancelledRef.current) return;
+      // Prepare sentence chunks
+      const chunks = splitIntoChunks(clean);
+      chunksRef.current = chunks;
+      currentChunkIndexRef.current = 0;
 
+      // Cancel any ongoing speech immediately
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
         try {
-          const utterance = new SpeechSynthesisUtterance(clean);
-          currentUtteranceRef.current = utterance;
-          // Protect from aggressive mobile garbage collection
-          (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = utterance;
-
-          utterance.rate = speedRef.current;
-          utterance.pitch = 1.0;
-          utterance.volume = 1.0;
-          utterance.lang = 'es-ES';
-
-          // Voice selection: prioritize Spanish voices
-          const currentVoices = voices.length > 0 ? voices : refreshVoices();
-          let chosenVoice = currentVoices.find((v) => v.name === selectedVoiceName);
-
-          if (!chosenVoice || !chosenVoice.isSpanish) {
-            // Pick any verified Spanish voice
-            chosenVoice = currentVoices.find((v) => v.isSpanish);
-          }
-
-          if (chosenVoice && chosenVoice.isSpanish) {
-            utterance.voice = chosenVoice.voice;
-            utterance.lang = chosenVoice.lang;
-          }
-
-          // Word/boundary tracking for real-time sentence highlight and progress
-          utterance.onboundary = (event) => {
-            if (isCancelledRef.current) return;
-            const charIdx = event.charIndex || 0;
-            const pct = Math.min(98, Math.max(5, Math.round((charIdx / clean.length) * 100)));
-            setProgress(pct);
-
-            const sliceStart = Math.max(0, clean.lastIndexOf('.', charIdx) + 1);
-            const sliceEnd = clean.indexOf('.', charIdx + 1);
-            const snippet = clean.slice(sliceStart, sliceEnd !== -1 ? sliceEnd + 1 : undefined).trim();
-            if (snippet) {
-              setCurrentSentence(snippet);
-            }
-          };
-
-          utterance.onstart = () => {
-            if (!isCancelledRef.current) {
-              setIsPlaying(true);
-              setIsPaused(false);
-            }
-          };
-
-          utterance.onend = () => {
-            if (isCancelledRef.current) return;
-            setProgress(100);
-            playSingingBowlSound(330);
-            setTimeout(() => {
-              stopSpeech();
-            }, 600);
-          };
-
-          utterance.onerror = (e) => {
-            if (e.error === 'interrupted' || e.error === 'canceled') {
-              return;
-            }
-            console.warn('SpeechSynthesis error:', e.error);
-            setSpeechError(
-              `El sintetizador de voz de tu dispositivo móvil no pudo emitir el audio (${e.error || 'fallo'}). Solución para Xiaomi/Android: Ve a Ajustes > Accesibilidad > Síntesis de voz y selecciona "Servicios de voz de Google" en español, y asegúrate de que el Volumen Multimedia (nota musical) no esté al mínimo.`
-            );
-            stopSpeech();
-          };
-
-          // On desktop Chrome only, run keepalive timer
-          if (!checkIsMobile()) {
-            keepAliveIntervalRef.current = window.setInterval(() => {
-              if (
-                'speechSynthesis' in window &&
-                window.speechSynthesis.speaking &&
-                !window.speechSynthesis.paused
-              ) {
-                window.speechSynthesis.pause();
-                window.speechSynthesis.resume();
-              }
-            }, 5000);
-          }
-
-          // Progress estimate fallback in case onboundary is not supported by device
-          const words = clean.split(' ').length;
-          const estimatedDurationSeconds = Math.max(5, words / (2.5 * speedRef.current));
-          let elapsed = 0;
-          progressTimerRef.current = window.setInterval(() => {
-            elapsed += 0.5;
-            const calcPct = Math.min(95, Math.round((elapsed / estimatedDurationSeconds) * 100));
-            setProgress((prev) => Math.max(prev, calcPct));
-          }, 500);
-
-          // Crucial: Must be synchronous within gesture for mobile Chrome / Xiaomi
-          window.speechSynthesis.speak(utterance);
-        } catch (err) {
-          console.warn('window.speechSynthesis.speak error:', err);
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignore
         }
-      };
+      }
 
-      // Always execute synchronously within user gesture
-      executeSpeak();
+      // CRITICAL: Call speakChunk SYNCHRONOUSLY within the user gesture event turn.
+      // Never use setTimeout here, otherwise mobile Chrome drops user gesture activation!
+      speakChunk(0);
     },
-    [voices, refreshVoices, selectedVoiceName, clearTimers, stopSpeech]
+    [speakChunk]
   );
 
   // Pause speech
   const pauseSpeech = useCallback(() => {
-    isPausedRef.current = true;
     setIsPaused(true);
     setIsPlaying(false);
-    clearTimers();
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
@@ -557,11 +434,10 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         // Ignore
       }
     }
-  }, [clearTimers]);
+  }, []);
 
   // Resume speech
   const resumeSpeech = useCallback(() => {
-    isPausedRef.current = false;
     isCancelledRef.current = false;
     setIsPaused(false);
     setIsPlaying(true);
@@ -570,6 +446,8 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       try {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
+        } else if (chunksRef.current.length > 0) {
+          speakChunk(currentChunkIndexRef.current);
         } else if (currentText) {
           speak(currentText, currentTitle);
         }
@@ -579,7 +457,7 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       }
     }
-  }, [currentText, currentTitle, speak]);
+  }, [currentText, currentTitle, speak, speakChunk]);
 
   // Speed adjustments
   const setSpeed = useCallback(
@@ -595,15 +473,27 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const handleSetVoice = useCallback((name: string) => {
     setSelectedVoiceName(name);
+    setUserExplicitlyChoseVoice(true);
     if (typeof window !== 'undefined') {
       localStorage.setItem('balsekar-voice', name);
     }
   }, []);
 
+  // Completely silenced bell function
+  const playSingingBowl = useCallback((_param?: number | unknown) => {
+    // Zero sounds or bells
+  }, []);
+
+  // Completely silenced ambient sound
+  const toggleAmbientSound = useCallback(() => {
+    // Zero background buzzing
+  }, []);
+
+  // Direct, quick narration demonstration
   const testVoice = useCallback(() => {
     speak(
       'La Consciencia es todo lo que hay. Las cosas suceden y los acontecimientos tienen lugar, pero no hay un hacedor individual.',
-      'Demostración de Audio y Voz'
+      'Demostración de Voz del Narrador'
     );
   }, [speak]);
 
@@ -611,17 +501,6 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
   useEffect(() => {
     return () => {
       stopSpeech();
-      if (tanpuraNodesRef.current) {
-        try {
-          tanpuraNodesRef.current.oscillators.forEach((osc) => {
-            osc.stop();
-            osc.disconnect();
-          });
-        } catch {
-          // Ignore
-        }
-        tanpuraNodesRef.current = null;
-      }
     };
   }, [stopSpeech]);
 

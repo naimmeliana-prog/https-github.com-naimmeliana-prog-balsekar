@@ -479,13 +479,13 @@ export const MEDIA_ARCHIVE: MediaItem[] = [
   },
   {
     id: 'audio-4',
-    title: 'Tanpura y Campana de Consciencia: Meditación Advaita Profunda',
+    title: 'La Consciencia en la Vida Cotidiana: Meditación Advaita Profunda',
     type: 'audio',
     duration: '25 min',
-    description: 'Paisaje acústico meditativo con armónicos tradicionales de Tanpura india a 432 Hz y campana tibetana, diseñado para la introspección no-dual y lectura prolongada.',
-    topic: 'Paisaje Acústico Contemplativo',
+    description: 'Contemplación sonora sobre la Consciencia impersonal en la actividad diaria, diseñada para la introspección no-dual y lectura sosegada.',
+    topic: 'Contemplación No-Dual',
     recordedIn: 'Estudio de Meditación',
-    transcriptExcerpt: '«Permite que los armónicos del Tanpura disuelvan la dispersión mental. Como las cuerdas afinadas al unísono, todo acontecimiento en el cosmos vibra en una sola sinfonía impersonal».'
+    transcriptExcerpt: '«Permite que la comprensión penetre profundamente: todo acontecimiento en el cosmos ocurre en una sola totalidad impersonal. Descansa en el Testigo que todo lo observa».'
   },
   {
     id: 'audio-5',

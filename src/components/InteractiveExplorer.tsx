@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { INQUIRY_SCENARIOS, SATSANG_DIALOGUES } from '../data/balsekarData';
 import { InquiryScenario, SatsangDialogue } from '../types';
-import { Compass, Volume2, VolumeX, Sparkles, HelpCircle, Eye, Bell, Play, Pause, RotateCcw } from 'lucide-react';
+import { Compass, Volume2, VolumeX, Sparkles, HelpCircle, Eye, Play, Pause, RotateCcw } from 'lucide-react';
 import { useAudioReader } from '../context/AudioReaderContext';
 
 export const InteractiveExplorer: React.FC = () => {
@@ -19,7 +19,7 @@ export const InteractiveExplorer: React.FC = () => {
   const [initialTime, setInitialTime] = useState<number>(60);
   const timerIntervalRef = useRef<number | null>(null);
 
-  const { speak, stopSpeech, isPlaying, currentTitle, playSingingBowl } = useAudioReader();
+  const { speak, stopSpeech, isPlaying, currentTitle } = useAudioReader();
 
   const handleListenScenario = (scenario: InquiryScenario) => {
     if (isPlaying && currentTitle === scenario.title) {
@@ -46,7 +46,6 @@ export const InteractiveExplorer: React.FC = () => {
       setInitialTime(secs);
       setTimerSeconds(secs);
     }
-    playSingingBowl();
     setTimerRunning(true);
   };
 
@@ -66,7 +65,6 @@ export const InteractiveExplorer: React.FC = () => {
           if (prev <= 1) {
             clearInterval(timerIntervalRef.current!);
             setTimerRunning(false);
-            playSingingBowl();
             return 0;
           }
           return prev - 1;
@@ -478,14 +476,6 @@ export const InteractiveExplorer: React.FC = () => {
                 className="p-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4" />
-              </button>
-
-              <button
-                onClick={playSingingBowl}
-                title="Tocar campana tibetana"
-                className="p-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--accent)] hover:border-[var(--accent)] transition-all cursor-pointer"
-              >
-                <Bell className="w-4 h-4" />
               </button>
             </div>
 

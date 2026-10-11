@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { useAudioReader } from '../context/AudioReaderContext';
-import { Volume2, VolumeX, Bell, Sun, Moon, Feather, Menu, X, Layers, LayoutList } from 'lucide-react';
+import { Sun, Moon, Feather, Menu, X, Layers, LayoutList } from 'lucide-react';
 
 export type TabId = 'inicio' | 'ensenanzas' | 'citas' | 'libros' | 'explorador' | 'multimedia' | 'glosario' | 'todos';
 
@@ -19,7 +18,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleViewMode,
 }) => {
   const { theme, setTheme } = useTheme();
-  const { ambientSound, toggleAmbientSound, playSingingBowl } = useAudioReader();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navLinks: { id: TabId; label: string }[] = [
@@ -119,35 +117,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>Continuo</span>
             </button>
           </div>
-
-          {/* Singing bowl chime */}
-          <button
-            type="button"
-            onClick={playSingingBowl}
-            title="Tocar campana tibetana"
-            className="p-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-pointer"
-            aria-label="Campana de silencio"
-          >
-            <Bell className="w-4 h-4" />
-          </button>
-
-          {/* Ambient sound toggle (Tanpura meditativa) */}
-          <button
-            type="button"
-            onClick={toggleAmbientSound}
-            title={ambientSound ? 'Desactivar música de Tanpura meditativa' : 'Activar sonido ambiental de Tanpura (432 Hz)'}
-            className={`p-2 rounded-lg border transition-all cursor-pointer flex items-center gap-1.5 ${
-              ambientSound
-                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] shadow-xs font-semibold'
-                : 'border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)]'
-            }`}
-            aria-label="Sonido ambiental y Tanpura"
-          >
-            <Volume2 className={`w-4 h-4 ${ambientSound ? 'animate-pulse text-[var(--accent)]' : ''}`} />
-            <span className="text-[11px] font-sans hidden sm:inline">
-              {ambientSound ? 'Tanpura Activa' : 'Sonido'}
-            </span>
-          </button>
 
           {/* Reading theme toggles */}
           <div className="flex items-center p-0.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-surface)] text-xs">

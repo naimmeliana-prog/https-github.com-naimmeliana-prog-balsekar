@@ -13,23 +13,12 @@ import {
   Copy,
   Check,
   Youtube,
-  Bell,
   Sparkles,
   Maximize2,
 } from 'lucide-react';
 import {
   useAudioReader,
-  getSharedAudioContext,
-  unlockMobileAudio,
-  activateMobileAudioSession,
-  playSingingBowlSound,
 } from '../context/AudioReaderContext';
-import {
-  playNativeBellAudio,
-  startNativeTanpuraDrone,
-  stopNativeTanpuraDrone,
-  setNativeTanpuraVolume,
-} from '../utils/audioGenerator';
 
 const GUIDED_CONTEMPLATIONS: Record<string, string> = {
   'audio-1':
@@ -39,7 +28,7 @@ const GUIDED_CONTEMPLATIONS: Record<string, string> = {
   'audio-3':
     'Inquirimiento en la Quietud: El Testigo que Nunca Nació. Antes de que aparezca cualquier pensamiento sobre el pasado o el futuro, hay una presencia viva y silenciosa. Sri Nisargadatta Maharaj y Ramesh Balsekar nos invitan a permanecer en este sentido puro de existencia: el Yo Soy. Aquí no hay tiempo, no hay conflicto ni separación. Eres la Consciencia inmutable que observa el fluir del mundo.',
   'audio-4':
-    'Tanpura y Campana de Consciencia: Meditación Advaita Profunda. Permite que la resonancia armónica del Tanpura disuelva la tensión mental. Como las cuerdas afinadas al unísono, todo acontecimiento en el cosmos vibra en una sola sinfonía impersonal. No luches contra los pensamientos: permite que surjan y desaparezcan como olas en el océano de la Consciencia.',
+    'La Consciencia en la Vida Cotidiana: Meditación Advaita Profunda. Permite que la comprensión penetre profundamente. Todo acontecimiento en el cosmos ocurre en una sola totalidad impersonal. No luches contra los pensamientos: permite que surjan y desaparezcan como olas en el océano de la Consciencia.',
   'audio-5':
     'Paz en lo Cotidiano: Rendición a la Voluntad Cósmica. Rendirse no es una derrota del ego, es la victoria de la cordura: reconocer que la pequeña ola no puede dirigir al inmenso océano. Actúa en el mundo con diligencia, pero suelta la ansiedad por los frutos de la acción. Al entregarte al Todo, la pesadez de vivir se transforma en ligereza.',
   'audio-6':
@@ -58,117 +47,17 @@ export const MediaArchive: React.FC = () => {
   const [audioVolume, setAudioVolume] = useState<number>(0.85);
   const [copiedTranscript, setCopiedTranscript] = useState<boolean>(false);
 
-  // Web Audio Nodes & Intervals
+  // Audio intervals
   const audioIntervalRef = useRef<number | null>(null);
-  const droneNodesRef = useRef<{ oscillators: OscillatorNode[]; gain: GainNode } | null>(null);
-  const bellIntervalRef = useRef<number | null>(null);
-  const htmlAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const { speak, stopSpeech, testVoice, isMobile } = useAudioReader();
+  const { isPlaying, speak, stopSpeech, testVoice, currentTitle } = useAudioReader();
+
+  const isCurrentAudioActive = isPlaying && currentTitle === selectedMedia.title;
 
   const videoItems = MEDIA_ARCHIVE.filter((m) => m.type === 'video');
   const audioItems = MEDIA_ARCHIVE.filter((m) => m.type === 'audio');
 
-  const getAudioContext = (): AudioContext | null => {
-    return getSharedAudioContext();
-  };
-
-  // Tibetan Bell / Sacred Gong Strike
-  const playResonantGong = (freq = 264, _volume = audioVolume) => {
-    unlockMobileAudio();
-    activateMobileAudioSession();
-    playSingingBowlSound(freq);
-  };
-
-  // Authentic Tanpura Meditation Drone (Dual pipeline: Native HTML5 Audio + Web Audio)
-  const startTanpuraMeditationAudio = () => {
-    try {
-      unlockMobileAudio();
-      activateMobileAudioSession();
-      stopTanpuraMeditationAudio();
-
-      // 1. Native HTML5 Audio Tanpura Drone (guaranteed audible on Xiaomi 11T / Android)
-      startNativeTanpuraDrone(0.85 * audioVolume);
-
-      // 2. Play starting crystal chime
-      playNativeBellAudio(0.95 * audioVolume);
-
-      // 3. Layer with Web Audio API for harmonic richness on browsers that support it
-      const ctx = getAudioContext();
-      if (ctx) {
-        const masterGain = ctx.createGain();
-        masterGain.gain.setValueAtTime(0.001, ctx.currentTime);
-        masterGain.gain.linearRampToValueAtTime(0.28 * audioVolume, ctx.currentTime + 1.0);
-
-        const filter = ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(550, ctx.currentTime);
-
-        const chord = [
-          { freq: 216.0, vol: 0.35 },  // Sa fundamental (audible on phones)
-          { freq: 324.0, vol: 0.25 },  // Pa fifth
-          { freq: 432.0, vol: 0.18 },  // Sa octave
-          { freq: 648.0, vol: 0.08 },  // Resonance
-        ];
-
-        const oscillators: OscillatorNode[] = [];
-
-        chord.forEach((note) => {
-          const osc = ctx.createOscillator();
-          const g = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(note.freq, ctx.currentTime);
-          g.gain.setValueAtTime(note.vol, ctx.currentTime);
-
-          osc.connect(g);
-          g.connect(filter);
-          osc.start();
-          oscillators.push(osc);
-        });
-
-        filter.connect(masterGain);
-        masterGain.connect(ctx.destination);
-
-        droneNodesRef.current = { oscillators, gain: masterGain };
-      }
-    } catch (err) {
-      console.warn('Tanpura audio start error:', err);
-    }
-  };
-
-  const stopTanpuraMeditationAudio = () => {
-    stopNativeTanpuraDrone();
-    if (bellIntervalRef.current) {
-      clearInterval(bellIntervalRef.current);
-      bellIntervalRef.current = null;
-    }
-    if (droneNodesRef.current) {
-      try {
-        const ctx = getAudioContext();
-        if (ctx) {
-          droneNodesRef.current.gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
-        }
-        setTimeout(() => {
-          if (droneNodesRef.current) {
-            droneNodesRef.current.oscillators.forEach((o) => {
-              try {
-                o.stop();
-                o.disconnect();
-              } catch {
-                // Ignore
-              }
-            });
-            droneNodesRef.current = null;
-          }
-        }, 700);
-      } catch {
-        droneNodesRef.current = null;
-      }
-    }
-  };
-
   const stopAllAudio = () => {
-    stopTanpuraMeditationAudio();
     setIsPlayingAudio(false);
     stopSpeech();
     if (audioIntervalRef.current) {
@@ -177,24 +66,20 @@ export const MediaArchive: React.FC = () => {
     }
   };
 
-  // Play Guided Meditation Session with spoken Advaita contemplation and gentle Tanpura
+  // Play Guided Meditation Session with clear spoken Advaita contemplation
   const togglePlayAudio = () => {
-    unlockMobileAudio();
-    activateMobileAudioSession();
-
-    if (isPlayingAudio) {
+    if (isPlayingAudio || isCurrentAudioActive) {
       stopAllAudio();
       return;
     }
 
     setIsPlayingAudio(true);
-    startTanpuraMeditationAudio();
 
     const contemplation =
       GUIDED_CONTEMPLATIONS[selectedMedia.id] ||
       `${selectedMedia.title}. ${selectedMedia.description}. ${selectedMedia.transcriptExcerpt}`;
 
-    // Speak the guided meditation with real browser voice
+    // Speak the guided contemplation with clean browser text-to-speech
     speak(contemplation, selectedMedia.title);
 
     // Timeline tracker
@@ -205,7 +90,6 @@ export const MediaArchive: React.FC = () => {
       setAudioCurrentTime((curr) => {
         if (curr >= audioDuration) {
           stopAllAudio();
-          playResonantGong(330, audioVolume);
           return 0;
         }
         return curr + 1;
@@ -227,20 +111,6 @@ export const MediaArchive: React.FC = () => {
 
   const handleVolumeChange = (vol: number) => {
     setAudioVolume(vol);
-    setNativeTanpuraVolume(0.85 * vol);
-    if (htmlAudioRef.current) {
-      htmlAudioRef.current.volume = vol;
-    }
-    if (droneNodesRef.current) {
-      try {
-        const ctx = getAudioContext();
-        if (ctx) {
-          droneNodesRef.current.gain.gain.setValueAtTime(0.28 * vol, ctx.currentTime);
-        }
-      } catch {
-        // Ignore
-      }
-    }
   };
 
   const handleSelectMedia = (item: MediaItem) => {
@@ -281,7 +151,7 @@ export const MediaArchive: React.FC = () => {
 
   useEffect(() => {
     return () => {
-      stopTanpuraMeditationAudio();
+      stopAllAudio();
       if (audioIntervalRef.current) {
         clearInterval(audioIntervalRef.current);
       }
@@ -300,7 +170,7 @@ export const MediaArchive: React.FC = () => {
             Videoteca Oficial de Satsangs y Audios Meditativos
           </h2>
           <p className="mt-3 text-sm sm:text-base text-[var(--text-secondary)] font-sans leading-relaxed">
-            Grabaciones históricas de diálogos en Bombay con Ramesh Balsekar verificadas en YouTube, y sesiones de audio meditativo acústico con armónicos de Tanpura y cuencos tibetanos a 432 Hz.
+            Grabaciones históricas de diálogos en Bombay con Ramesh Balsekar verificadas en YouTube, y sesiones de audios meditativos guiados con narración de voz clara.
           </p>
         </div>
 
@@ -555,17 +425,6 @@ export const MediaArchive: React.FC = () => {
                       <FastForward className="w-4 h-4" />
                     </button>
 
-                    {/* Instant Sound Test Bell & Voice */}
-                    <button
-                      type="button"
-                      onClick={() => playResonantGong(264, audioVolume)}
-                      title="Probar sonido de campana tibetana (Audio nativo directo)"
-                      className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent)] hover:border-[var(--accent)] transition-all cursor-pointer flex items-center gap-1.5"
-                    >
-                      <Bell className="w-4 h-4" />
-                      <span className="text-xs font-semibold hidden sm:inline">Campana</span>
-                    </button>
-
                     <button
                       type="button"
                       onClick={testVoice}
@@ -585,7 +444,7 @@ export const MediaArchive: React.FC = () => {
                       <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-6" style={{ animationDelay: '300ms' }} />
                       <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-9" style={{ animationDelay: '75ms' }} />
                       <div className="w-1 bg-[var(--accent)] rounded-full animate-bounce h-4" style={{ animationDelay: '220ms' }} />
-                      <span className="text-xs text-[var(--accent)] font-medium ml-2">Audio y Tanpura emitiéndose...</span>
+                      <span className="text-xs text-[var(--accent)] font-medium ml-2">Narración en audio activa...</span>
                     </div>
                   )}
 
@@ -607,7 +466,7 @@ export const MediaArchive: React.FC = () => {
                   </div>
 
                   <p className="text-[11px] text-[var(--text-muted)] font-sans mt-3">
-                    Sonido meditativo armónico acústico de Tanpura india a 432 Hz y campanas sagradas con recitación guiada.
+                    Narración oral de enseñanzas meditativas en audio con transcripción guiada.
                   </p>
 
                   {/* Mobile Sound Helper Banner with Xiaomi 11T / Android specific advice */}
@@ -615,17 +474,17 @@ export const MediaArchive: React.FC = () => {
                     <span className="text-xl shrink-0 mt-0.5">📱</span>
                     <div className="text-xs text-[var(--text-secondary)] font-sans leading-relaxed">
                       <strong className="text-[var(--text-primary)] block mb-1">
-                        ¿Tienes un Xiaomi (11T / MIUI / HyperOS) o Android y no suena?
+                        ¿Tienes un Xiaomi (11T / MIUI / HyperOS) o Android y no escuchas la voz?
                       </strong>
                       <ol className="list-decimal list-inside space-y-1 text-[11px]">
                         <li>
-                          <strong>Volumen Multimedia:</strong> En Xiaomi, al pulsar los botones laterales de volumen, pulsa los <strong>tres puntos verticales (•••)</strong> que aparecen en pantalla y sube la barra de <strong>Música / Multimedia 🎵</strong> (los botones a veces solo cambian el tono de llamada).
+                          <strong>Volumen Multimedia:</strong> En móviles Xiaomi, al pulsar los botones laterales de volumen físico, pulsa los <strong>tres puntos verticales (•••)</strong> que aparecen en la barra en pantalla y sube el deslizador con el icono de la <strong>nota musical 🎵 (Multimedia)</strong>. Por defecto en Xiaomi, los botones físicos solo cambian el timbre de llamada y dejan la música/voz en silencio.
                         </li>
                         <li>
-                          <strong>Prueba rápida:</strong> Pulsa el botón <strong>«🔔 Campana»</strong> arriba; si suena el timbre tibetano, el altavoz de tu móvil ya está activado.
+                          <strong>Prueba rápida:</strong> Pulsa el botón <strong>«Probar voz»</strong> arriba; si escuchas la voz del narrador, el altavoz y el motor de voz de tu móvil están listos.
                         </li>
                         <li>
-                          <strong>En PC:</strong> En el ordenador funcionará directamente al pulsar «▶ Reproducir Sesión Meditativa» o «Campana».
+                          <strong>Motor TTS en Xiaomi:</strong> Si sigue en silencio, ve a <em>Ajustes de tu teléfono → Ajustes adicionales → Accesibilidad → Visión → Síntesis de voz</em> y asegúrate de tener seleccionado <strong>«Servicios de voz de Google»</strong> en idioma Español.
                         </li>
                       </ol>
                     </div>
@@ -679,7 +538,7 @@ export const MediaArchive: React.FC = () => {
                   : 'Catálogo de Audios Meditativos (6)'}
               </span>
               <span className="text-[11px] text-[var(--accent)]">
-                {activeMediaTab === 'video' ? 'Oficiales YouTube' : 'Tanpura & 432 Hz'}
+                {activeMediaTab === 'video' ? 'Oficiales YouTube' : 'Sesiones Guiadas'}
               </span>
             </div>
 
