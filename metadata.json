@@ -1,0 +1,6 @@
+{
+  "name": "Ramesh Balsekar - Enseñanzas de No-Dualidad y Advaita",
+  "description": "Exploración integral de la filosofía no-dual de Ramesh S. Balsekar: enseñanzas completas, citas destacadas, biblioteca audiovisual, lecturas con audio integrado y explorador conceptual interactivo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
