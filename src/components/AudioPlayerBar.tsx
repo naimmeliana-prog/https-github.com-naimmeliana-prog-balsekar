@@ -8,29 +8,40 @@ import {
   X,
   Settings2,
   Sparkles,
+  Loader2,
+  AlertCircle,
+  RotateCcw,
 } from 'lucide-react';
 
 export const AudioPlayerBar: React.FC = () => {
   const {
     isPlaying,
     isPaused,
+    isLoading,
+    playbackState,
     currentTitle,
     currentSentence,
     speed,
     progress,
+    currentTime,
+    duration,
     voices,
     selectedVoiceName,
     pauseSpeech,
     resumeSpeech,
     stopSpeech,
+    seek,
     setSpeed,
     setSelectedVoiceName,
     testVoice,
+    speechError,
   } = useAudioReader();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  if (!isPlaying && !isPaused) {
+  // Keep bar open if playing, paused, loading, or showing an error
+  const isVisible = isPlaying || isPaused || isLoading || playbackState === 'error';
+  if (!isVisible) {
     return null;
   }
 
@@ -38,17 +49,45 @@ export const AudioPlayerBar: React.FC = () => {
   const spanishVoices = voices.filter((v) => v.isSpanish);
   const displayVoices = spanishVoices.length > 0 ? spanishVoices : voices;
 
+  const formatSeconds = (sec: number): string => {
+    if (!sec || isNaN(sec) || sec < 0) return '0:00';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const handleProgressBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!duration || duration <= 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, clickX / rect.width));
+    seek(pct * duration);
+  };
+
   return (
     <aside
       aria-label="Reproductor de audio y narración"
-      className="fixed bottom-0 inset-x-0 z-50 p-3 sm:p-4 transition-all"
+      className="fixed bottom-0 inset-x-0 z-50 p-2 sm:p-4 transition-all"
     >
       <div className="max-w-3xl mx-auto rounded-2xl border border-[var(--border-color)] bg-[var(--bg-card)] shadow-2xl p-3 sm:p-4 backdrop-blur-md">
-        {/* Progress Bar */}
-        <div className="w-full bg-[var(--border-color)] h-1.5 rounded-full mb-3 overflow-hidden">
+        {/* Interactive Progress Bar */}
+        <div
+          role="slider"
+          aria-valuenow={progress}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          tabIndex={0}
+          onClick={handleProgressBarClick}
+          className="w-full bg-[var(--border-color)] h-2 rounded-full mb-3 overflow-hidden cursor-pointer relative group"
+          title="Toca para adelantar o retroceder"
+        >
           <div
-            className="bg-[var(--accent)] h-full transition-all duration-300"
-            style={{ width: `${Math.max(5, progress)}%` }}
+            className={`h-full transition-all duration-200 ${
+              isLoading
+                ? 'bg-[var(--accent)] opacity-60 animate-pulse'
+                : 'bg-[var(--accent)]'
+            }`}
+            style={{ width: `${Math.max(4, Math.min(100, progress))}%` }}
           />
         </div>
 
@@ -56,20 +95,39 @@ export const AudioPlayerBar: React.FC = () => {
           {/* Track and Active Sentence Info */}
           <div className="flex items-center gap-3 w-full sm:w-auto min-w-0 flex-1">
             <div className="w-9 h-9 rounded-xl bg-[var(--accent-soft)] flex items-center justify-center text-[var(--accent)] shrink-0 shadow-2xs">
-              <Volume2 className="w-4 h-4" />
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Volume2 className="w-4 h-4" />
+              )}
             </div>
+
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] uppercase tracking-wider font-semibold text-[var(--accent)] font-sans">
-                  {isPlaying ? 'Reproduciendo audio' : 'Pausado'}
+                  {isLoading
+                    ? 'Preparando audio...'
+                    : isPlaying
+                    ? 'Reproduciendo audio'
+                    : isPaused
+                    ? 'Pausado'
+                    : 'Audio'}
                 </span>
-                <span className="text-[10px] text-[var(--text-muted)] font-mono">
-                  {progress}%
-                </span>
+                {duration > 0 ? (
+                  <span className="text-[10px] text-[var(--text-muted)] font-mono">
+                    {formatSeconds(currentTime)} / {formatSeconds(duration)}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-[var(--text-muted)] font-mono">
+                    {progress}%
+                  </span>
+                )}
               </div>
+
               <h4 className="font-serif text-sm font-semibold text-[var(--text-primary)] truncate">
                 {currentTitle || 'Lectura de Enseñanza'}
               </h4>
+
               {currentSentence && (
                 <p className="text-xs text-[var(--text-secondary)] font-sans italic truncate max-w-lg mt-0.5">
                   «{currentSentence}»
@@ -98,33 +156,42 @@ export const AudioPlayerBar: React.FC = () => {
               ))}
             </div>
 
-            {/* Play/Pause */}
-            {isPaused ? (
+            {/* Play/Pause Button */}
+            {isLoading ? (
               <button
                 type="button"
-                onClick={resumeSpeech}
-                title="Reanudar narración"
-                className="p-2.5 rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs"
+                disabled
+                title="Cargando audio..."
+                className="p-2.5 rounded-xl bg-[var(--accent)] text-white opacity-80 cursor-wait shadow-xs"
               >
-                <Play className="w-4 h-4 fill-current" />
+                <Loader2 className="w-4 h-4 animate-spin fill-current" />
+              </button>
+            ) : isPlaying ? (
+              <button
+                type="button"
+                onClick={pauseSpeech}
+                title="Pausar reproducción"
+                className="p-2.5 rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs active:scale-95"
+              >
+                <Pause className="w-4 h-4 fill-current" />
               </button>
             ) : (
               <button
                 type="button"
-                onClick={pauseSpeech}
-                title="Pausar narración"
-                className="p-2.5 rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs"
+                onClick={resumeSpeech}
+                title="Reproducir / Reanudar"
+                className="p-2.5 rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs active:scale-95"
               >
-                <Pause className="w-4 h-4 fill-current" />
+                <Play className="w-4 h-4 fill-current ml-0.5" />
               </button>
             )}
 
-            {/* Stop */}
+            {/* Stop Button */}
             <button
               type="button"
               onClick={stopSpeech}
-              title="Detener lectura"
-              className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-red-500 hover:border-red-300 transition-all cursor-pointer"
+              title="Detener y cerrar"
+              className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-red-500 hover:border-red-300 transition-all cursor-pointer active:scale-95"
             >
               <Square className="w-4 h-4" />
             </button>
@@ -143,7 +210,7 @@ export const AudioPlayerBar: React.FC = () => {
               <Settings2 className="w-4 h-4" />
             </button>
 
-            {/* Close */}
+            {/* Close Button */}
             <button
               type="button"
               onClick={stopSpeech}
@@ -154,6 +221,24 @@ export const AudioPlayerBar: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Notice / Retry if playback error occurred */}
+        {speechError && (
+          <div className="mt-2.5 pt-2 border-t border-[var(--border-color)] flex items-center justify-between text-xs text-amber-600 dark:text-amber-400">
+            <div className="flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              <span>{speechError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={resumeSpeech}
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] hover:opacity-80 font-medium cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Tocar para reproducir</span>
+            </button>
+          </div>
+        )}
 
         {/* Voice Selection Drawer */}
         {settingsOpen && (

@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  ReactNode,
+} from 'react';
 
 export interface VoiceOption {
   id: string;
@@ -16,14 +24,20 @@ export interface DebugLogEntry {
   message: string;
 }
 
-interface AudioReaderContextType {
+export type PlaybackState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
+
+export interface AudioReaderContextType {
   isPlaying: boolean;
   isPaused: boolean;
+  isLoading: boolean;
+  playbackState: PlaybackState;
   currentTitle: string;
   currentText: string;
   currentSentence: string;
   speed: number;
   progress: number;
+  currentTime: number;
+  duration: number;
   ambientSound: boolean;
   voices: VoiceOption[];
   selectedVoiceName: string;
@@ -31,15 +45,16 @@ interface AudioReaderContextType {
   speechError: string | null;
   clearSpeechError: () => void;
   speak: (text: string, title?: string, audioFileUrl?: string) => void;
+  playAudioFile: (url: string, title?: string, textFallback?: string) => void;
   pauseSpeech: () => void;
   resumeSpeech: () => void;
   stopSpeech: () => void;
+  seek: (seconds: number) => void;
   setSpeed: (speed: number) => void;
   setSelectedVoiceName: (voiceName: string) => void;
   toggleAmbientSound: () => void;
   playSingingBowl: (freqOrEvent?: number | unknown) => void;
   testVoice: () => void;
-  // Mobile compatibility & diagnostics
   debugLogs: DebugLogEntry[];
   addDebugLog: (msg: string, level?: 'info' | 'warn' | 'error' | 'success') => void;
   clearDebugLogs: () => void;
@@ -51,10 +66,12 @@ interface AudioReaderContextType {
 
 const AudioReaderContext = createContext<AudioReaderContextType | undefined>(undefined);
 
-// Detect mobile environment (Xiaomi, Android, iOS, etc.)
+// Detect mobile environment (Xiaomi, Redmi, Android, iOS, etc.)
 const checkIsMobile = (): boolean => {
   if (typeof window === 'undefined') return false;
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Xiaomi|Redmi/i.test(navigator.userAgent);
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|Xiaomi|Redmi/i.test(
+    navigator.userAgent
+  );
 };
 
 export const SERVER_VOICE_NAME = 'Voz de Estudio (Recomendada Móvil)';
@@ -66,7 +83,7 @@ const SERVER_VOICE_OPTION: VoiceOption = {
   isServerVoice: true,
 };
 
-// Global pool of active utterances to prevent V8 garbage collection on Chromium
+// Global pool of active utterances to prevent Chromium GC issues
 const activeUtterancesPool: SpeechSynthesisUtterance[] = [];
 
 // Clean text for speech synthesis and TTS
@@ -80,7 +97,7 @@ function cleanSpokenText(raw: string): string {
 }
 
 /**
- * Split long text into natural sentence chunks (~80-140 chars).
+ * Split long text into natural sentence chunks (~90-130 chars).
  */
 function splitIntoChunks(text: string): string[] {
   if (!text) return [];
@@ -106,38 +123,38 @@ function splitIntoChunks(text: string): string[] {
   return chunks.length > 0 ? chunks : [text];
 }
 
-export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+interface AudioReaderProviderProps {
+  children: ReactNode;
+}
+
+export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ children }) => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [playbackState, setPlaybackState] = useState<PlaybackState>('idle');
   const [currentTitle, setCurrentTitle] = useState<string>('');
   const [currentText, setCurrentText] = useState<string>('');
   const [currentSentence, setCurrentSentence] = useState<string>('');
   const [speed, setSpeedState] = useState<number>(1.0);
   const [progress, setProgress] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [duration, setDuration] = useState<number>(0);
   const [ambientSound] = useState<boolean>(false);
   const [voices, setVoices] = useState<VoiceOption[]>([SERVER_VOICE_OPTION]);
-  const [isMobile] = useState<boolean>(checkIsMobile());
-
-  const [selectedVoiceName, setSelectedVoiceName] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('balsekar-voice');
-      if (saved) return saved;
-    }
-    // On mobile devices, always default to the reliable studio server voice
-    return SERVER_VOICE_NAME;
-  });
-
+  const [selectedVoiceName, setSelectedVoiceName] = useState<string>(SERVER_VOICE_NAME);
   const [speechError, setSpeechError] = useState<string | null>(null);
-
-  // Diagnostics & playback state
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [isAutoPlayUnlocked, setIsAutoPlayUnlocked] = useState<boolean>(false);
-  const [currentPlaybackMode, setCurrentPlaybackMode] = useState<'audio-file' | 'speech-synthesis' | 'idle'>('idle');
+  const [currentPlaybackMode, setCurrentPlaybackMode] = useState<
+    'audio-file' | 'speech-synthesis' | 'idle'
+  >('idle');
 
-  // Unified HTML5 Audio element
+  const isMobile = checkIsMobile();
+
+  // Persistent DOM-backed HTMLAudioElement ref
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
 
-  // Refs for tracking playback across re-renders
+  // Playback control refs
   const speedRef = useRef<number>(1.0);
   const isCancelledRef = useRef<boolean>(false);
   const chunksRef = useRef<string[]>([]);
@@ -145,21 +162,27 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   useEffect(() => {
     speedRef.current = speed;
+    if (audioElementRef.current) {
+      audioElementRef.current.playbackRate = speed;
+    }
   }, [speed]);
 
-  const addLog = useCallback((message: string, level: 'info' | 'warn' | 'error' | 'success' = 'info') => {
-    const timeStr = new Date().toLocaleTimeString('es-ES', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-    console.log(`[AudioReader][${timeStr}] ${message}`);
-    setDebugLogs((prev) => [
-      { id: `${Date.now()}-${Math.random()}`, time: timeStr, level, message },
-      ...prev.slice(0, 50),
-    ]);
-  }, []);
+  const addLog = useCallback(
+    (message: string, level: 'info' | 'warn' | 'error' | 'success' = 'info') => {
+      const timeStr = new Date().toLocaleTimeString('es-ES', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      console.log(`[AudioReader][${timeStr}] ${message}`);
+      setDebugLogs((prev) => [
+        { id: `${Date.now()}-${Math.random()}`, time: timeStr, level, message },
+        ...prev.slice(0, 50),
+      ]);
+    },
+    []
+  );
 
   const clearDebugLogs = useCallback(() => {
     setDebugLogs([]);
@@ -169,27 +192,10 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setSpeechError(null);
   }, []);
 
-  // Helper to retrieve or initialize the HTMLAudioElement
-  const getAudioElement = useCallback((): HTMLAudioElement => {
-    if (!audioElementRef.current && typeof Audio !== 'undefined') {
-      const audio = new Audio();
-      audio.setAttribute('playsinline', 'true');
-      audio.setAttribute('webkit-playsinline', 'true');
-      audio.preload = 'auto';
-      audio.volume = 1.0;
-      audio.muted = false;
-      audioElementRef.current = audio;
-    }
-    return audioElementRef.current as HTMLAudioElement;
-  }, []);
-
-  // Manual unlock for mobile user gesture
+  // Synchronous unlock helper for mobile touch gesture
   const unlockAudioManually = useCallback(async (): Promise<boolean> => {
     try {
-      const audio = getAudioElement();
-      if (audio) {
-        setIsAutoPlayUnlocked(true);
-      }
+      setIsAutoPlayUnlocked(true);
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
@@ -199,9 +205,9 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } catch {
       return false;
     }
-  }, [getAudioElement]);
+  }, []);
 
-  // Touch listener to pre-unlock audio
+  // Pre-unlock on first user tap/click
   useEffect(() => {
     const handleFirstGesture = () => {
       unlockAudioManually();
@@ -218,32 +224,27 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   }, [unlockAudioManually]);
 
-  // Voice enumeration and refresh logic
-  const refreshVoices = useCallback((): VoiceOption[] => {
+  // Load available speech synthesis voices for desktop browsers
+  const refreshVoices = useCallback(() => {
     const list: VoiceOption[] = [SERVER_VOICE_OPTION];
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
-        const raw = window.speechSynthesis.getVoices();
-        if (raw && raw.length > 0) {
-          const seen = new Set<string>();
-          const synthList: VoiceOption[] = [];
-
-          raw.forEach((v, idx) => {
-            const signature = `${v.name}|${v.lang}|${v.voiceURI || idx}`;
-            if (!seen.has(signature)) {
-              seen.add(signature);
-              const langLower = v.lang.toLowerCase();
-              const isSpanish = langLower.startsWith('es') || langLower.includes('es-');
-              synthList.push({
-                id: `v-${idx}-${v.name.replace(/[^a-zA-Z0-9]/g, '_')}-${v.lang}`,
-                voice: v,
-                name: v.name,
-                lang: v.lang,
-                isSpanish,
-                isServerVoice: false,
-              });
-            }
+        const available = window.speechSynthesis.getVoices();
+        if (available && available.length > 0) {
+          const synthList: VoiceOption[] = available.map((v, i) => {
+            const isEs =
+              v.lang.toLowerCase().startsWith('es') ||
+              v.name.toLowerCase().includes('spanish') ||
+              v.name.toLowerCase().includes('español');
+            return {
+              id: `synth-${v.name}-${i}`,
+              voice: v,
+              name: v.name,
+              lang: v.lang,
+              isSpanish: isEs,
+              isServerVoice: false,
+            };
           });
 
           synthList.sort((a, b) => {
@@ -255,7 +256,7 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
           list.push(...synthList);
         }
       } catch (err) {
-        console.warn('Voice enumeration error:', err);
+        console.warn('Voice enumeration warning:', err);
       }
     }
 
@@ -284,13 +285,13 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   }, [refreshVoices]);
 
-  // Stop all speech and audio playback
+  // Completely stop all speech and audio playback
   const stopSpeech = useCallback(() => {
     isCancelledRef.current = true;
     chunksRef.current = [];
     currentChunkIndexRef.current = 0;
 
-    // 1. Stop HTML5 audio element
+    // 1. Pause HTML5 Audio Element
     if (audioElementRef.current) {
       try {
         audioElementRef.current.pause();
@@ -300,12 +301,8 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     }
 
-    // 2. Stop Web Speech API
+    // 2. Cancel Web Speech API
     activeUtterancesPool.length = 0;
-    if (typeof window !== 'undefined') {
-      (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = null;
-    }
-
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
@@ -318,26 +315,29 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     setIsPlaying(false);
     setIsPaused(false);
+    setIsLoading(false);
+    setPlaybackState('idle');
     setProgress(0);
+    setCurrentTime(0);
     setCurrentSentence('');
     setCurrentPlaybackMode('idle');
+    setSpeechError(null);
   }, []);
 
-  // Web Speech API fallback for chunked narration
+  // Web Speech API fallback for desktop browsers
   const speakChunk = useCallback(
     (index: number) => {
-      if (isCancelledRef.current || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      if (
+        isCancelledRef.current ||
+        typeof window === 'undefined' ||
+        !('speechSynthesis' in window)
+      ) {
         return;
       }
 
       const chunks = chunksRef.current;
       if (!chunks || index >= chunks.length) {
-        setIsPlaying(false);
-        setIsPaused(false);
-        setProgress(100);
-        setTimeout(() => {
-          stopSpeech();
-        }, 200);
+        stopSpeech();
         return;
       }
 
@@ -345,14 +345,16 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const textToSpeak = chunks[index];
       setCurrentSentence(textToSpeak);
 
-      const progressPct = Math.min(98, Math.max(5, Math.round(((index + 1) / chunks.length) * 100)));
+      const progressPct = Math.min(
+        98,
+        Math.max(5, Math.round(((index + 1) / chunks.length) * 100))
+      );
       setProgress(progressPct);
 
       try {
         const utterance = new SpeechSynthesisUtterance(textToSpeak);
 
         activeUtterancesPool.push(utterance);
-        (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = utterance;
 
         utterance.rate = Math.min(1.4, Math.max(0.7, speedRef.current));
         utterance.pitch = 1.0;
@@ -361,7 +363,9 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
         // Assign voice if available
         const currentVoices = voices.length > 0 ? voices : window.speechSynthesis.getVoices();
-        const chosenVoice = currentVoices.find((v) => ('name' in v ? v.name : '') === selectedVoiceName);
+        const chosenVoice = currentVoices.find(
+          (v) => ('name' in v ? v.name : '') === selectedVoiceName
+        );
         if (chosenVoice && 'voice' in chosenVoice && (chosenVoice as VoiceOption).voice) {
           utterance.voice = (chosenVoice as VoiceOption).voice!;
         }
@@ -370,6 +374,8 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
           if (!isCancelledRef.current) {
             setIsPlaying(true);
             setIsPaused(false);
+            setIsLoading(false);
+            setPlaybackState('playing');
             setCurrentPlaybackMode('speech-synthesis');
           }
         };
@@ -377,7 +383,6 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         utterance.onend = () => {
           const idx = activeUtterancesPool.indexOf(utterance);
           if (idx !== -1) activeUtterancesPool.splice(idx, 1);
-          (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = null;
 
           if (isCancelledRef.current) return;
           speakChunk(index + 1);
@@ -386,7 +391,6 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         utterance.onerror = (e) => {
           const idx = activeUtterancesPool.indexOf(utterance);
           if (idx !== -1) activeUtterancesPool.splice(idx, 1);
-          (window as unknown as { __activeUtterance?: unknown }).__activeUtterance = null;
 
           if (e.error === 'interrupted' || e.error === 'canceled') {
             return;
@@ -413,12 +417,11 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Play an audio stream or file via HTMLAudioElement (MP3 / WAV)
   const playAudioFile = useCallback(
-    (url: string, title: string, textFallback: string) => {
+    (url: string, title?: string, textFallback?: string) => {
       try {
-        const audio = getAudioElement();
         isCancelledRef.current = false;
 
-        // Stop any active Web Speech synthesis
+        // Stop any active Web Speech synthesis on desktop
         if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
           try {
             if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
@@ -427,94 +430,86 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
           }
         }
 
+        const resolvedTitle = title || 'Reproduciendo Audio';
+        const sentencePreview = textFallback ? textFallback.slice(0, 140) : '';
+
+        // Open the player bar immediately in loading state
         setCurrentPlaybackMode('audio-file');
-        setCurrentTitle(title);
-        setCurrentSentence(textFallback ? textFallback.slice(0, 120) : '');
+        setCurrentTitle(resolvedTitle);
+        setCurrentSentence(sentencePreview);
+        setIsLoading(true);
         setIsPlaying(true);
         setIsPaused(false);
-        setProgress(5);
+        setPlaybackState('loading');
+        setProgress(0);
+        setCurrentTime(0);
+        setSpeechError(null);
 
-        // Normalize URL: prefer .mp3 for mobile devices
-        let primaryUrl = url;
-        let fallbackUrl: string | null = null;
-        if (primaryUrl.endsWith('.wav')) {
-          fallbackUrl = primaryUrl;
-          primaryUrl = primaryUrl.replace(/\.wav$/, '.mp3');
-        } else if (primaryUrl.endsWith('.mp3')) {
-          fallbackUrl = primaryUrl.replace(/\.mp3$/, '.wav');
+        // Normalize URL: prefer .mp3 for universal hardware playback
+        let targetUrl = url;
+        if (targetUrl.endsWith('.wav')) {
+          targetUrl = targetUrl.replace(/\.wav$/, '.mp3');
         }
 
-        audio.pause();
-        audio.src = primaryUrl;
+        const audio = audioElementRef.current;
+        if (!audio) {
+          console.warn('Audio element ref not attached yet');
+          return;
+        }
+
+        // Avoid re-assigning same src if already playing
+        const currentSrc = audio.src ? new URL(audio.src, window.location.href).href : '';
+        const targetFullUrl = new URL(targetUrl, window.location.href).href;
+
+        if (currentSrc !== targetFullUrl) {
+          audio.src = targetUrl;
+          audio.currentTime = 0;
+        }
+
         audio.playbackRate = speedRef.current;
         audio.volume = 1.0;
         audio.muted = false;
 
-        audio.onplaying = () => {
-          setIsPlaying(true);
-          setIsPaused(false);
-        };
-
-        audio.ontimeupdate = () => {
-          if (audio.duration && !isNaN(audio.duration) && audio.duration > 0) {
-            const pct = Math.min(100, Math.round((audio.currentTime / audio.duration) * 100));
-            setProgress(pct);
-          }
-        };
-
-        audio.onended = () => {
-          stopSpeech();
-        };
-
-        audio.onerror = () => {
-          // If primary URL failed (e.g. mp3), try fallback wav
-          if (fallbackUrl && audio.src !== fallbackUrl) {
-            audio.src = fallbackUrl;
-            audio.load();
-            audio.play().catch(() => {
-              // If both file formats fail, fallback to Web Speech
-              fallbackToWebSpeech(textFallback);
-            });
-            return;
-          }
-          fallbackToWebSpeech(textFallback);
-        };
-
-        const fallbackToWebSpeech = (raw: string) => {
-          const clean = cleanSpokenText(raw);
-          if (!clean) {
-            stopSpeech();
-            return;
-          }
-          chunksRef.current = splitIntoChunks(clean);
-          currentChunkIndexRef.current = 0;
-          setCurrentPlaybackMode('speech-synthesis');
-          speakChunk(0);
-        };
-
-        audio.load();
+        // Invoke play() directly within user gesture stack
         const playPromise = audio.play();
         if (playPromise !== undefined) {
-          playPromise.catch((err) => {
-            console.warn('HTMLAudioElement play() warning:', err);
-            // On mobile gesture restriction or network glitch, try fallback
-            if (fallbackUrl) {
-              audio.src = fallbackUrl;
-              audio.load();
-              audio.play().catch(() => fallbackToWebSpeech(textFallback));
-            } else {
-              fallbackToWebSpeech(textFallback);
-            }
-          });
+          playPromise
+            .then(() => {
+              setIsLoading(false);
+              setIsPlaying(true);
+              setIsPaused(false);
+              setPlaybackState('playing');
+            })
+            .catch((err: Error) => {
+              if (err.name === 'AbortError') {
+                // Interrupted by another playback request, standard Chromium behavior
+                return;
+              }
+              if (err.name === 'NotAllowedError') {
+                // Mobile policy required an explicit click on the player
+                setIsLoading(false);
+                setIsPlaying(false);
+                setIsPaused(true);
+                setPlaybackState('paused');
+                setSpeechError('Toca reproducir en la barra inferior');
+                return;
+              }
+              console.warn('HTMLAudioElement play() warning:', err);
+              setIsLoading(false);
+              setPlaybackState('error');
+              setSpeechError('Error al reproducir. Toca para reintentar.');
+            });
         }
       } catch (err) {
         console.warn('playAudioFile fatal error:', err);
+        setIsLoading(false);
+        setPlaybackState('error');
       }
     },
-    [getAudioElement, speakChunk, stopSpeech]
+    []
   );
 
-  // Main Speak function
+  // Main Speak function - universal mobile + desktop router
   const speak = useCallback(
     (text: string, title: string = 'Lectura de Enseñanza', audioFileUrl?: string) => {
       if (!text && !audioFileUrl) return;
@@ -522,7 +517,7 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isCancelledRef.current = false;
       setSpeechError(null);
 
-      // 1. If explicit audio file is provided (e.g. /audio/audio-1.mp3), play it directly
+      // 1. If explicit audio file is provided (e.g. /audio/audio-1.mp3), play directly
       if (audioFileUrl) {
         playAudioFile(audioFileUrl, title, text);
         return;
@@ -531,9 +526,8 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const clean = cleanSpokenText(text);
       if (!clean) return;
 
-      // 2. Determine playback engine:
-      // Mobile devices (Xiaomi, Android, iOS) or default voice use studio server audio stream.
-      // This guarantees audio works on Xiaomi 11T where local Web Speech is broken or silent.
+      // 2. On Mobile (Xiaomi 11T, Android, iOS) or default voice:
+      // Always stream real MP3 from /api/tts. This avoids silent/broken Web Speech API on MIUI.
       const shouldUseServerTts =
         isMobile ||
         selectedVoiceName === SERVER_VOICE_NAME ||
@@ -542,14 +536,13 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         voices.find((v) => v.name === selectedVoiceName)?.isServerVoice;
 
       if (shouldUseServerTts) {
-        // Direct stream from our Express /api/tts endpoint (MP3 format, streaming byte range)
         const textSample = clean.length > 380 ? clean.slice(0, 380) + '...' : clean;
         const serverUrl = `/api/tts?text=${encodeURIComponent(textSample)}&format=mp3`;
         playAudioFile(serverUrl, title, clean);
         return;
       }
 
-      // 3. Desktop user with specific local voice selected: use Web Speech API
+      // 3. Desktop user with specific local synth voice selected
       if (audioElementRef.current) {
         try {
           audioElementRef.current.pause();
@@ -559,12 +552,14 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       }
 
+      setCurrentPlaybackMode('speech-synthesis');
       setCurrentTitle(title);
       setCurrentText(clean);
+      setIsLoading(false);
       setIsPlaying(true);
       setIsPaused(false);
+      setPlaybackState('playing');
       setProgress(5);
-      setCurrentPlaybackMode('speech-synthesis');
 
       try {
         if (window.speechSynthesis.paused) {
@@ -582,27 +577,14 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [isMobile, selectedVoiceName, voices, playAudioFile, speakChunk]
   );
 
-  // Keep-alive timer for Web Speech API on Chromium
-  useEffect(() => {
-    if (!isPlaying || isPaused || currentPlaybackMode !== 'speech-synthesis') return;
-
-    const interval = setInterval(() => {
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        if (window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
-        }
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [isPlaying, isPaused, currentPlaybackMode]);
-
   // Pause speech or audio
   const pauseSpeech = useCallback(() => {
     setIsPaused(true);
     setIsPlaying(false);
+    setIsLoading(false);
+    setPlaybackState('paused');
 
-    if (audioElementRef.current && currentPlaybackMode === 'audio-file') {
+    if (audioElementRef.current) {
       try {
         audioElementRef.current.pause();
       } catch {
@@ -617,27 +599,41 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         // Ignore
       }
     }
-  }, [currentPlaybackMode]);
+  }, []);
 
   // Resume speech or audio
   const resumeSpeech = useCallback(() => {
     isCancelledRef.current = false;
-    setIsPaused(false);
-    setIsPlaying(true);
+    setSpeechError(null);
 
-    if (audioElementRef.current && currentPlaybackMode === 'audio-file') {
-      try {
-        audioElementRef.current.play();
-        return;
-      } catch {
-        // Ignore
+    if (audioElementRef.current && audioElementRef.current.src) {
+      setIsLoading(true);
+      const playPromise = audioElementRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsLoading(false);
+            setIsPlaying(true);
+            setIsPaused(false);
+            setPlaybackState('playing');
+          })
+          .catch((err) => {
+            console.warn('resumeSpeech play error:', err);
+            setIsLoading(false);
+            setIsPaused(true);
+            setPlaybackState('paused');
+          });
       }
+      return;
     }
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
+          setIsPlaying(true);
+          setIsPaused(false);
+          setPlaybackState('playing');
         } else if (chunksRef.current.length > 0) {
           speakChunk(currentChunkIndexRef.current);
         } else if (currentText) {
@@ -649,7 +645,22 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       }
     }
-  }, [currentPlaybackMode, currentText, currentTitle, speak, speakChunk]);
+  }, [currentText, currentTitle, speak, speakChunk]);
+
+  // Seek position in current audio track
+  const seek = useCallback((seconds: number) => {
+    if (audioElementRef.current && audioElementRef.current.duration) {
+      const targetTime = Math.max(
+        0,
+        Math.min(seconds, audioElementRef.current.duration)
+      );
+      audioElementRef.current.currentTime = targetTime;
+      setCurrentTime(targetTime);
+      setProgress(
+        Math.round((targetTime / audioElementRef.current.duration) * 100)
+      );
+    }
+  }, []);
 
   // Speed adjustments
   const setSpeed = useCallback(
@@ -661,7 +672,12 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         audioElementRef.current.playbackRate = newSpeed;
       }
 
-      if (isPlaying && !isPaused && currentText && currentPlaybackMode === 'speech-synthesis') {
+      if (
+        isPlaying &&
+        !isPaused &&
+        currentText &&
+        currentPlaybackMode === 'speech-synthesis'
+      ) {
         speak(currentText, currentTitle);
       }
     },
@@ -675,24 +691,71 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, []);
 
-  // Completely silenced bell function
-  const playSingingBowl = useCallback((_param?: number | unknown) => {
-    // Zero sounds or bells
-  }, []);
+  // Completely silenced bells & ambient sound
+  const playSingingBowl = useCallback((_param?: number | unknown) => {}, []);
+  const toggleAmbientSound = useCallback(() => {}, []);
 
-  // Completely silenced ambient sound
-  const toggleAmbientSound = useCallback(() => {
-    // Zero background buzzing
-  }, []);
-
-  // Direct, reliable audio test demonstration
+  // Reliable voice test demonstrating audio playback
   const testVoice = useCallback(() => {
-    speak(
-      'La Consciencia es todo lo que hay. Las cosas suceden y los acontecimientos tienen lugar, pero no hay un hacedor individual.',
+    playAudioFile(
+      '/audio/demo-test.mp3',
       'Demostración de Voz del Narrador',
-      '/audio/demo-test.mp3'
+      'La Consciencia es todo lo que hay. Las cosas suceden y los acontecimientos tienen lugar, pero no hay un hacedor individual.'
     );
-  }, [speak]);
+  }, [playAudioFile]);
+
+  // Audio element event handlers
+  const onNativePlaying = () => {
+    setIsLoading(false);
+    setIsPlaying(true);
+    setIsPaused(false);
+    setPlaybackState('playing');
+  };
+
+  const onNativePause = () => {
+    if (playbackState !== 'loading' && playbackState !== 'idle') {
+      setIsPlaying(false);
+      setIsPaused(true);
+      setPlaybackState('paused');
+    }
+  };
+
+  const onNativeTimeUpdate = () => {
+    const audio = audioElementRef.current;
+    if (audio && audio.duration && !isNaN(audio.duration) && audio.duration > 0) {
+      setCurrentTime(audio.currentTime);
+      setDuration(audio.duration);
+      const pct = Math.min(100, Math.round((audio.currentTime / audio.duration) * 100));
+      setProgress(pct);
+    }
+  };
+
+  const onNativeDurationChange = () => {
+    const audio = audioElementRef.current;
+    if (audio && audio.duration && !isNaN(audio.duration)) {
+      setDuration(audio.duration);
+    }
+  };
+
+  const onNativeEnded = () => {
+    setIsPlaying(false);
+    setIsPaused(false);
+    setIsLoading(false);
+    setPlaybackState('idle');
+    setProgress(100);
+    setTimeout(() => {
+      stopSpeech();
+    }, 400);
+  };
+
+  const onNativeError = () => {
+    const audio = audioElementRef.current;
+    console.warn('Native HTMLAudioElement error event:', audio?.error);
+    // Don't close immediately; allow user to tap retry
+    setIsLoading(false);
+    setPlaybackState('error');
+    setSpeechError('No se pudo cargar el audio. Toca para reintentar.');
+  };
 
   // Cleanup on unmount
   useEffect(() => {
@@ -706,11 +769,15 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       value={{
         isPlaying,
         isPaused,
+        isLoading,
+        playbackState,
         currentTitle,
         currentText,
         currentSentence,
         speed,
         progress,
+        currentTime,
+        duration,
         ambientSound,
         voices,
         selectedVoiceName,
@@ -718,9 +785,11 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
         speechError,
         clearSpeechError,
         speak,
+        playAudioFile,
         pauseSpeech,
         resumeSpeech,
         stopSpeech,
+        seek,
         setSpeed,
         setSelectedVoiceName: handleSetVoice,
         toggleAmbientSound,
@@ -736,6 +805,20 @@ export const AudioReaderProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }}
     >
       {children}
+      {/* DOM-mounted audio element for persistent mobile audio lifecycle */}
+      <audio
+        ref={audioElementRef}
+        playsInline
+        preload="auto"
+        onPlaying={onNativePlaying}
+        onPause={onNativePause}
+        onTimeUpdate={onNativeTimeUpdate}
+        onDurationChange={onNativeDurationChange}
+        onEnded={onNativeEnded}
+        onError={onNativeError}
+        className="hidden"
+        style={{ display: 'none' }}
+      />
     </AudioReaderContext.Provider>
   );
 };

@@ -50,9 +50,28 @@ export const MediaArchive: React.FC = () => {
   // Audio intervals
   const audioIntervalRef = useRef<number | null>(null);
 
-  const { isPlaying, speak, stopSpeech, testVoice, currentTitle } = useAudioReader();
+  const {
+    isPlaying,
+    speak,
+    stopSpeech,
+    testVoice,
+    currentTitle,
+    currentTime,
+    duration,
+    seek,
+  } = useAudioReader();
 
   const isCurrentAudioActive = isPlaying && currentTitle === selectedMedia.title;
+
+  // Sync displayed time with active audio stream if playing
+  const effectiveCurrentTime =
+    isCurrentAudioActive && currentTime > 0
+      ? Math.round(currentTime)
+      : audioCurrentTime;
+  const effectiveDuration =
+    isCurrentAudioActive && duration > 0
+      ? Math.round(duration)
+      : audioDuration;
 
   useEffect(() => {
     if (!isPlaying && isPlayingAudio) {
@@ -91,32 +110,29 @@ export const MediaArchive: React.FC = () => {
 
     // Speak the guided contemplation with dual engine (Audio file / Text-to-speech)
     speak(contemplation, selectedMedia.title, selectedMedia.audioUrl);
-
-    // Timeline tracker
-    if (audioIntervalRef.current) {
-      clearInterval(audioIntervalRef.current);
-    }
-    audioIntervalRef.current = window.setInterval(() => {
-      setAudioCurrentTime((curr) => {
-        if (curr >= audioDuration) {
-          stopAllAudio();
-          return 0;
-        }
-        return curr + 1;
-      });
-    }, 1000);
   };
 
   const handleSeek = (newTime: number) => {
     setAudioCurrentTime(newTime);
+    if (isCurrentAudioActive) {
+      seek(newTime);
+    }
   };
 
   const handleRewind15 = () => {
-    setAudioCurrentTime((curr) => Math.max(0, curr - 15));
+    const target = Math.max(0, effectiveCurrentTime - 15);
+    setAudioCurrentTime(target);
+    if (isCurrentAudioActive) {
+      seek(target);
+    }
   };
 
   const handleForward15 = () => {
-    setAudioCurrentTime((curr) => Math.min(audioDuration, curr + 15));
+    const target = Math.min(effectiveDuration, effectiveCurrentTime + 15);
+    setAudioCurrentTime(target);
+    if (isCurrentAudioActive) {
+      seek(target);
+    }
   };
 
   const handleVolumeChange = (vol: number) => {
@@ -386,14 +402,14 @@ export const MediaArchive: React.FC = () => {
                     <input
                       type="range"
                       min={0}
-                      max={audioDuration || 60}
-                      value={audioCurrentTime}
+                      max={effectiveDuration || 60}
+                      value={effectiveCurrentTime}
                       onChange={(e) => handleSeek(Number(e.target.value))}
                       className="w-full accent-[var(--accent)] cursor-pointer h-1.5 bg-[var(--border-color)] rounded-lg"
                     />
                     <div className="flex items-center justify-between text-xs text-[var(--text-muted)] font-mono mt-1">
-                      <span>{formatTime(audioCurrentTime)}</span>
-                      <span>{formatTime(audioDuration || 1080)}</span>
+                      <span>{formatTime(effectiveCurrentTime)}</span>
+                      <span>{formatTime(effectiveDuration || 1080)}</span>
                     </div>
                   </div>
 

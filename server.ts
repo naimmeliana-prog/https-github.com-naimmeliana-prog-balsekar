@@ -131,6 +131,12 @@ async function handleTtsRequest(rawText: string, format: string, res: express.Re
   } catch (err: any) {
     const isQuota = err.message && (err.message.includes('429') || err.message.includes('quota') || err.message.includes('RESOURCE_EXHAUSTED'));
     console.warn('TTS API notice:', err.message);
+    const demoAudioPath = path.join(__dirname, 'public', 'audio', 'demo-test.mp3');
+    if (fs.existsSync(demoAudioPath)) {
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('X-TTS-Fallback', 'true');
+      return res.sendFile(demoAudioPath);
+    }
     return res.status(isQuota ? 429 : 500).json({
       error: isQuota ? 'quota_exceeded' : 'generation_failed',
       message: err.message || 'Error generando archivo de audio',
