@@ -157,16 +157,7 @@ export const AudioPlayerBar: React.FC = () => {
             </div>
 
             {/* Play/Pause Button */}
-            {isLoading ? (
-              <button
-                type="button"
-                disabled
-                title="Cargando audio..."
-                className="p-2.5 rounded-xl bg-[var(--accent)] text-white opacity-80 cursor-wait shadow-xs"
-              >
-                <Loader2 className="w-4 h-4 animate-spin fill-current" />
-              </button>
-            ) : isPlaying ? (
+            {isPlaying ? (
               <button
                 type="button"
                 onClick={pauseSpeech}
@@ -179,10 +170,14 @@ export const AudioPlayerBar: React.FC = () => {
               <button
                 type="button"
                 onClick={resumeSpeech}
-                title="Reproducir / Reanudar"
-                className="p-2.5 rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs active:scale-95"
+                title="Reproducir"
+                className="p-2.5 rounded-xl bg-[var(--accent)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs active:scale-95 flex items-center justify-center min-w-10 min-h-10"
               >
-                <Play className="w-4 h-4 fill-current ml-0.5" />
+                {isLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin fill-current" />
+                ) : (
+                  <Play className="w-4 h-4 fill-current ml-0.5" />
+                )}
               </button>
             )}
 

@@ -199,30 +199,14 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
 
   const isAudioUnlockedRef = useRef<boolean>(false);
 
-  // Synchronous unlock helper for mobile touch gesture - primes both Web Speech and HTMLAudioElement
+  // Synchronous unlock helper for mobile touch gesture
   const unlockAudioManually = useCallback(async (): Promise<boolean> => {
-    if (isAudioUnlockedRef.current) return true;
     try {
       setIsAutoPlayUnlocked(true);
+      isAudioUnlockedRef.current = true;
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
-        }
-      }
-
-      // Unlock HTMLAudioElement by playing 0.1s silent buffer synchronously during user gesture
-      const audio = audioElementRef.current;
-      if (audio && !isAudioUnlockedRef.current) {
-        const prevSrc = audio.src;
-        audio.src = SILENT_WAV_URI;
-        const p = audio.play();
-        if (p !== undefined) {
-          await p.catch(() => {});
-          audio.pause();
-          isAudioUnlockedRef.current = true;
-          if (prevSrc && prevSrc !== SILENT_WAV_URI) {
-            audio.src = prevSrc;
-          }
         }
       }
       return true;
@@ -490,7 +474,6 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
 
         if (currentSrc !== targetFullUrl) {
           audio.src = targetUrl;
-          audio.load();
         }
 
         audio.playbackRate = speedRef.current;
@@ -514,13 +497,13 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
             })
             .catch((err: Error) => {
               isExplicitActionRef.current = false;
+              setIsLoading(false);
               if (err.name === 'AbortError') {
                 // Interrupted by another playback request, standard Chromium behavior
                 return;
               }
               if (err.name === 'NotAllowedError') {
                 // Mobile policy required an explicit click on the player
-                setIsLoading(false);
                 setIsPlaying(false);
                 setIsPaused(true);
                 setPlaybackState('paused');
@@ -528,9 +511,7 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
                 return;
               }
               console.warn('HTMLAudioElement play() warning:', err);
-              // CRUCIAL: Do NOT close the player bar on load/network error!
               // Keep bar open in paused state and show retry button
-              setIsLoading(false);
               setIsPlaying(false);
               setIsPaused(true);
               setPlaybackState('error');

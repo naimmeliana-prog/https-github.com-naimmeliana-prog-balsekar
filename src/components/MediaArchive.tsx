@@ -105,14 +105,19 @@ export const MediaArchive: React.FC = () => {
       return;
     }
 
+    const currentItem = selectedMedia.type === 'audio' ? selectedMedia : audioItems[0];
+    if (currentItem.id !== selectedMedia.id) {
+      setSelectedMedia(currentItem);
+    }
+
     setIsPlayingAudio(true);
 
     const contemplation =
-      GUIDED_CONTEMPLATIONS[selectedMedia.id] ||
-      `${selectedMedia.title}. ${selectedMedia.description}. ${selectedMedia.transcriptExcerpt}`;
+      GUIDED_CONTEMPLATIONS[currentItem.id] ||
+      `${currentItem.title}. ${currentItem.description}. ${currentItem.transcriptExcerpt}`;
 
     // Speak the guided contemplation with dual engine (Audio file / Text-to-speech)
-    speak(contemplation, selectedMedia.title, selectedMedia.audioUrl);
+    speak(contemplation, currentItem.title, currentItem.audioUrl);
   };
 
   const handleSeek = (newTime: number) => {
