@@ -54,6 +54,16 @@ export const MediaArchive: React.FC = () => {
 
   const isCurrentAudioActive = isPlaying && currentTitle === selectedMedia.title;
 
+  useEffect(() => {
+    if (!isPlaying && isPlayingAudio) {
+      setIsPlayingAudio(false);
+      if (audioIntervalRef.current) {
+        clearInterval(audioIntervalRef.current);
+        audioIntervalRef.current = null;
+      }
+    }
+  }, [isPlaying, isPlayingAudio]);
+
   const videoItems = MEDIA_ARCHIVE.filter((m) => m.type === 'video');
   const audioItems = MEDIA_ARCHIVE.filter((m) => m.type === 'audio');
 
@@ -468,27 +478,6 @@ export const MediaArchive: React.FC = () => {
                   <p className="text-[11px] text-[var(--text-muted)] font-sans mt-3">
                     Narración oral de enseñanzas meditativas en audio con transcripción guiada.
                   </p>
-
-                  {/* Mobile Sound Helper Banner with Xiaomi 11T / Android specific advice */}
-                  <div className="mt-5 p-3.5 rounded-xl bg-[var(--accent-soft)] border border-[var(--border-color)] text-left flex items-start gap-3">
-                    <span className="text-xl shrink-0 mt-0.5">📱</span>
-                    <div className="text-xs text-[var(--text-secondary)] font-sans leading-relaxed">
-                      <strong className="text-[var(--text-primary)] block mb-1">
-                        ¿Tienes un Xiaomi (11T / MIUI / HyperOS) o Android y no escuchas la voz?
-                      </strong>
-                      <ol className="list-decimal list-inside space-y-1 text-[11px]">
-                        <li>
-                          <strong>Volumen Multimedia:</strong> En móviles Xiaomi, al pulsar los botones laterales de volumen físico, pulsa los <strong>tres puntos verticales (•••)</strong> que aparecen en la barra en pantalla y sube el deslizador con el icono de la <strong>nota musical 🎵 (Multimedia)</strong>. Por defecto en Xiaomi, los botones físicos solo cambian el timbre de llamada y dejan la música/voz en silencio.
-                        </li>
-                        <li>
-                          <strong>Prueba rápida:</strong> Pulsa el botón <strong>«Probar voz»</strong> arriba; si escuchas la voz del narrador, el altavoz y el motor de voz de tu móvil están listos.
-                        </li>
-                        <li>
-                          <strong>Motor TTS en Xiaomi:</strong> Si sigue en silencio, ve a <em>Ajustes de tu teléfono → Ajustes adicionales → Accesibilidad → Visión → Síntesis de voz</em> y asegúrate de tener seleccionado <strong>«Servicios de voz de Google»</strong> en idioma Español.
-                        </li>
-                      </ol>
-                    </div>
-                  </div>
                 </div>
               </div>
             )}
