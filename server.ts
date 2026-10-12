@@ -78,6 +78,7 @@ async function handleTtsRequest(rawText: string, format: string, res: express.Re
     // If cached file exists, stream it immediately with Range headers supported
     if (fs.existsSync(cacheFilePath)) {
       res.setHeader('Content-Type', targetFormat === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+      res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
       return res.sendFile(cacheFilePath);
     }
@@ -126,6 +127,7 @@ async function handleTtsRequest(rawText: string, format: string, res: express.Re
     }
 
     res.setHeader('Content-Type', targetFormat === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+    res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
     return res.sendFile(cacheFilePath);
   } catch (err: any) {
@@ -134,6 +136,7 @@ async function handleTtsRequest(rawText: string, format: string, res: express.Re
     const demoAudioPath = path.join(__dirname, 'public', 'audio', 'demo-test.mp3');
     if (fs.existsSync(demoAudioPath)) {
       res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('X-TTS-Fallback', 'true');
       return res.sendFile(demoAudioPath);
     }

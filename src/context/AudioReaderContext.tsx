@@ -83,6 +83,10 @@ const SERVER_VOICE_OPTION: VoiceOption = {
   isServerVoice: true,
 };
 
+// Silent 0.1s WAV data URI for bulletproof hardware audio unlock on iOS/Android/MIUI
+const SILENT_WAV_URI =
+  'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+
 // Global pool of active utterances to prevent Chromium GC issues
 const activeUtterancesPool: SpeechSynthesisUtterance[] = [];
 
@@ -193,13 +197,32 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
     setSpeechError(null);
   }, []);
 
-  // Synchronous unlock helper for mobile touch gesture
+  const isAudioUnlockedRef = useRef<boolean>(false);
+
+  // Synchronous unlock helper for mobile touch gesture - primes both Web Speech and HTMLAudioElement
   const unlockAudioManually = useCallback(async (): Promise<boolean> => {
+    if (isAudioUnlockedRef.current) return true;
     try {
       setIsAutoPlayUnlocked(true);
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
+        }
+      }
+
+      // Unlock HTMLAudioElement by playing 0.1s silent buffer synchronously during user gesture
+      const audio = audioElementRef.current;
+      if (audio && !isAudioUnlockedRef.current) {
+        const prevSrc = audio.src;
+        audio.src = SILENT_WAV_URI;
+        const p = audio.play();
+        if (p !== undefined) {
+          await p.catch(() => {});
+          audio.pause();
+          isAudioUnlockedRef.current = true;
+          if (prevSrc && prevSrc !== SILENT_WAV_URI) {
+            audio.src = prevSrc;
+          }
         }
       }
       return true;
@@ -208,20 +231,22 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
     }
   }, []);
 
-  // Pre-unlock on first user tap/click
+  // Pre-unlock on first user tap/click anywhere on the mobile viewport
   useEffect(() => {
     const handleFirstGesture = () => {
       unlockAudioManually();
-      window.removeEventListener('touchstart', handleFirstGesture);
-      window.removeEventListener('click', handleFirstGesture);
     };
 
     window.addEventListener('touchstart', handleFirstGesture, { passive: true, once: true });
+    window.addEventListener('touchend', handleFirstGesture, { passive: true, once: true });
     window.addEventListener('click', handleFirstGesture, { passive: true, once: true });
+    window.addEventListener('pointerdown', handleFirstGesture, { passive: true, once: true });
 
     return () => {
       window.removeEventListener('touchstart', handleFirstGesture);
+      window.removeEventListener('touchend', handleFirstGesture);
       window.removeEventListener('click', handleFirstGesture);
+      window.removeEventListener('pointerdown', handleFirstGesture);
     };
   }, [unlockAudioManually]);
 
@@ -465,7 +490,7 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
 
         if (currentSrc !== targetFullUrl) {
           audio.src = targetUrl;
-          audio.currentTime = 0;
+          audio.load();
         }
 
         audio.playbackRate = speedRef.current;
@@ -477,6 +502,8 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
         if (playPromise !== undefined) {
           playPromise
             .then(() => {
+              isAudioUnlockedRef.current = true;
+              setIsAutoPlayUnlocked(true);
               setIsLoading(false);
               setIsPlaying(true);
               setIsPaused(false);
@@ -625,6 +652,8 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
+            isAudioUnlockedRef.current = true;
+            setIsAutoPlayUnlocked(true);
             setIsLoading(false);
             setIsPlaying(true);
             setIsPaused(false);
@@ -834,8 +863,17 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
         onDurationChange={onNativeDurationChange}
         onEnded={onNativeEnded}
         onError={onNativeError}
-        className="hidden"
-        style={{ display: 'none' }}
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '1px',
+          height: '1px',
+          opacity: 0.01,
+          pointerEvents: 'none',
+          zIndex: -1,
+        }}
       />
     </AudioReaderContext.Provider>
   );
