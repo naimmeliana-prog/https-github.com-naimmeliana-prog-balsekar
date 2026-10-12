@@ -157,6 +157,7 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
   // Playback control refs
   const speedRef = useRef<number>(1.0);
   const isCancelledRef = useRef<boolean>(false);
+  const isExplicitActionRef = useRef<boolean>(false);
   const chunksRef = useRef<string[]>([]);
   const currentChunkIndexRef = useRef<number>(0);
 
@@ -420,6 +421,7 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
     (url: string, title?: string, textFallback?: string) => {
       try {
         isCancelledRef.current = false;
+        isExplicitActionRef.current = true;
 
         // Stop any active Web Speech synthesis on desktop
         if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -433,7 +435,7 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
         const resolvedTitle = title || 'Reproduciendo Audio';
         const sentencePreview = textFallback ? textFallback.slice(0, 140) : '';
 
-        // Open the player bar immediately in loading state
+        // Open the player bar immediately and keep it visible
         setCurrentPlaybackMode('audio-file');
         setCurrentTitle(resolvedTitle);
         setCurrentSentence(sentencePreview);
@@ -479,8 +481,12 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
               setIsPlaying(true);
               setIsPaused(false);
               setPlaybackState('playing');
+              setTimeout(() => {
+                isExplicitActionRef.current = false;
+              }, 600);
             })
             .catch((err: Error) => {
+              isExplicitActionRef.current = false;
               if (err.name === 'AbortError') {
                 // Interrupted by another playback request, standard Chromium behavior
                 return;
@@ -495,15 +501,22 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
                 return;
               }
               console.warn('HTMLAudioElement play() warning:', err);
+              // CRUCIAL: Do NOT close the player bar on load/network error!
+              // Keep bar open in paused state and show retry button
               setIsLoading(false);
+              setIsPlaying(false);
+              setIsPaused(true);
               setPlaybackState('error');
-              setSpeechError('Error al reproducir. Toca para reintentar.');
+              setSpeechError('Audio en espera. Toca reproducir.');
             });
         }
       } catch (err) {
         console.warn('playAudioFile fatal error:', err);
         setIsLoading(false);
+        setIsPlaying(false);
+        setIsPaused(true);
         setPlaybackState('error');
+        setSpeechError('Toca reproducir en la barra');
       }
     },
     []
@@ -620,6 +633,7 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
           .catch((err) => {
             console.warn('resumeSpeech play error:', err);
             setIsLoading(false);
+            setIsPlaying(false);
             setIsPaused(true);
             setPlaybackState('paused');
           });
@@ -713,11 +727,13 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
   };
 
   const onNativePause = () => {
-    if (playbackState !== 'loading' && playbackState !== 'idle') {
-      setIsPlaying(false);
-      setIsPaused(true);
-      setPlaybackState('paused');
+    // If the browser pauses during initial loading or before user play finishes, keep in paused state, don't close bar
+    if (isExplicitActionRef.current) {
+      return;
     }
+    setIsPlaying(false);
+    setIsPaused(true);
+    setPlaybackState('paused');
   };
 
   const onNativeTimeUpdate = () => {
@@ -751,10 +767,12 @@ export const AudioReaderProvider: React.FC<AudioReaderProviderProps> = ({ childr
   const onNativeError = () => {
     const audio = audioElementRef.current;
     console.warn('Native HTMLAudioElement error event:', audio?.error);
-    // Don't close immediately; allow user to tap retry
+    // CRITICAL: NEVER close the player on error. Keep bar visible in paused state so user can tap play/retry
     setIsLoading(false);
+    setIsPlaying(false);
+    setIsPaused(true);
     setPlaybackState('error');
-    setSpeechError('No se pudo cargar el audio. Toca para reintentar.');
+    setSpeechError('Toca reproducir en la barra.');
   };
 
   // Cleanup on unmount

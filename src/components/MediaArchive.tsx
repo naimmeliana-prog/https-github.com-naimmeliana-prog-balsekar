@@ -52,6 +52,8 @@ export const MediaArchive: React.FC = () => {
 
   const {
     isPlaying,
+    isPaused,
+    isLoading,
     speak,
     stopSpeech,
     testVoice,
@@ -61,7 +63,8 @@ export const MediaArchive: React.FC = () => {
     seek,
   } = useAudioReader();
 
-  const isCurrentAudioActive = isPlaying && currentTitle === selectedMedia.title;
+  const isCurrentAudioActive =
+    (isPlaying || isPaused || isLoading) && currentTitle === selectedMedia.title;
 
   // Sync displayed time with active audio stream if playing
   const effectiveCurrentTime =
@@ -74,14 +77,14 @@ export const MediaArchive: React.FC = () => {
       : audioDuration;
 
   useEffect(() => {
-    if (!isPlaying && isPlayingAudio) {
+    if (!isPlaying && !isPaused && !isLoading && isPlayingAudio) {
       setIsPlayingAudio(false);
       if (audioIntervalRef.current) {
         clearInterval(audioIntervalRef.current);
         audioIntervalRef.current = null;
       }
     }
-  }, [isPlaying, isPlayingAudio]);
+  }, [isPlaying, isPaused, isLoading, isPlayingAudio]);
 
   const videoItems = MEDIA_ARCHIVE.filter((m) => m.type === 'video');
   const audioItems = MEDIA_ARCHIVE.filter((m) => m.type === 'audio');
